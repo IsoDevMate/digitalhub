@@ -2,9 +2,9 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { AdminSearcher } from "#/components/common/admins";
-import { ClinicalLeadSearcher } from "#/components/common/clinical-leads";
-import { HubCoordinatorSearcher } from "#/components/common/hub-coordinators";
+import { AdminSearcher } from "#/components/common/admins/admin-searcher";
+import { ClinicalLeadSearcher } from "#/components/common/clinical-leads/clinical-lead-searcher";
+import { HubCoordinatorSearcher } from "#/components/common/hub-coordinators/hub-coordinator-searcher";
 import { Button } from "#/components/ui/button";
 import {
   Dialog,
