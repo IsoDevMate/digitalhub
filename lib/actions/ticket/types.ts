@@ -11,6 +11,7 @@ export const TicketCategoryEnum = z.enum(PrismaTicketCategory);
 export const TicketStatusEnum = z.enum(PrismaTicketStatus);
 export const TicketPriorityLevelEnum = z.enum(PrismaTicketPriorityLevel);
 
+// POINT OF RETURNS
 export const CreateTicketSchema = z.object({
   subject: stringValidation("Subject is required"),
   description: stringValidation("Description is required"),
@@ -41,6 +42,17 @@ export type EscalationRecipientRole = Extract<
 
 export const ESCALATION_RECIPIENT_ROLES: EscalationRecipientRole[] = [
   "SUPERVISOR",
+  "HUB_COORDINATOR",
+  "ADMIN",
+  "CLINICAL_LEAD",
+];
+
+export type ReassignmentInitiatorRole = Extract<
+  ImplementerRole,
+  "HUB_COORDINATOR" | "ADMIN" | "CLINICAL_LEAD"
+  >;
+
+export const REASSIGNMENT_INITIATOR_ROLES: ReassignmentInitiatorRole[] = [
   "HUB_COORDINATOR",
   "ADMIN",
   "CLINICAL_LEAD",
@@ -165,8 +177,8 @@ export type OrderedEscalation = Omit<
 
 export interface TicketEscalationStatus {
   canEscalate: boolean;
-  isResolved: boolean;
-  reason?: string;
+  canReassign: boolean;
+  canResolve: boolean;
 }
 
 export interface TicketResolution {

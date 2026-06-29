@@ -110,7 +110,6 @@ export async function getEscalationsPerTicket(
     const authorized = await db.ticketEscalations.findFirst({
       where: {
         ticketId,
-        OR: [{ escalatedById: session.user.id }, { escalatedToId: session.user.id }],
       },
       take: 1,
     });
@@ -282,6 +281,7 @@ export async function getTicketEscalationStatus(
     if (!session?.user.id) throw new Error("Not authenticated");
 
     const userId = session.user.id;
+    const userRole = session.user.activeMembership?.role;
 
     const ticket = await db.tickets.findUnique({
       where: { id: ticketId },
@@ -293,18 +293,11 @@ export async function getTicketEscalationStatus(
     if (ticket.status === "RESOLVED") {
       return {
         success: true,
-        message: "Ticket status retrieved",
-        data: { canEscalate: false, isResolved: true, reason: "Ticket has already been resolved" },
+        message: "This ticket has already been resolved and is no longer actionable",
+        data: { canEscalate: false, canReassign: false, canResolve: false },
       };
     }
 
-    if (session.user.activeMembership?.role === ImplementerRole.ADMIN) {
-      return {
-        success: true,
-        message: "User is admin cannot escalate ticket but only resolve",
-        data: { canEscalate: false, isResolved: false },
-      };
-    }
 
     const existingEscalation = await db.ticketEscalations.findFirst({
       where: { escalatedById: userId, ticketId },
@@ -313,19 +306,23 @@ export async function getTicketEscalationStatus(
     if (existingEscalation) {
       return {
         success: true,
-        message: "Ticket escalation status retrieved",
-        data: {
-          canEscalate: false,
-          isResolved: false,
-          reason: "You have already escalated this ticket",
-        },
+        message: "You have already escalated this ticket and cannot do so again",
+        data: { canEscalate: false, canReassign: false, canResolve: false },
+      };
+    }
+
+    if (userRole === ImplementerRole.ADMIN) {
+      return {
+        success: true,
+        message: "Administrators cannot escalate tickets but can resolve and reassign them",
+        data: { canEscalate: false, canReassign: true, canResolve: true },
       };
     }
 
     return {
       success: true,
-      message: "Ticket escalation status retrieved",
-      data: { canEscalate: true, isResolved: false },
+      message: "You can escalate this ticket as you are the current escalation recipient",
+      data: { canEscalate: true, canReassign:true, canResolve: false },
     };
   } catch (error) {
     return { success: false, message: error instanceof Error ? error.message : "Unknown error" };
@@ -383,6 +380,43 @@ export async function getTicketResolution(
     return { success: false, message: error instanceof Error ? error.message : "Unknown error" };
   }
 }
+
+export async function reassignTicket(
+  ticketId: string,
+  reassignmentRecipientId: string
+):Promise<ActionResponse> {
+  try {
+
+    const session = await getCurrentUserSession();
+    if (!session?.user.id) throw new Error("Not authenticated");
+    const userId = session?.user.id;
+
+    if (!session.user.activeMembership?.role) throw new Error("No role was found for this user");
+    const userRole = session.user.activeMembership?.role;
+
+    await db.$transaction(async function (tx) {
+
+      const reassignmentRecepientRole = await tx.implementerMember.findFirst({
+        where: {
+          userId: reassignmentRecipientId,
+          role:userRole
+        }
+      })
+
+      if (!reassignmentRecepientRole) throw new Error(`Caanot reassign to this user`);
+
+      await tx.ticketEscalations.updateMany({
+        where: { escalatedToId: userId, ticketId: ticketId },
+        data: { escalatedToId: reassignmentRecipientId }
+      });
+    })
+
+    return { success: true, message: "Successfully reassigned ticket" };
+  } catch (error) {
+    return { success: false, message: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
 
 function isEscalationInitiatorRole(role: ImplementerRole): boolean {
   if (!ESCALATION_INITIATOR_ROLES.includes(role as EscalationInitiatorRole)) return false;

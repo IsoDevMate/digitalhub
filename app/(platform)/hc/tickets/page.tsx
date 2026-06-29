@@ -23,6 +23,7 @@ export default async function TicketsPage() {
         role={
           hubCoordinator?.session?.user.activeMembership?.role ?? ImplementerRole.HUB_COORDINATOR
         }
+        hubId={hubCoordinator?.profile?.assignedHubId ?? undefined}
         showCreateButton={false}
       />
     </div>

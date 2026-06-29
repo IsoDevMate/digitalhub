@@ -5,24 +5,29 @@ import { useMemo, useState } from "react";
 import { columns, type TicketData } from "#/components/common/ticket/columns";
 import CreateTicketDialog from "#/components/common/ticket/create-ticket-dialog";
 import { EscalateTicketDialog } from "#/components/common/ticket/escalate-ticket-dialog";
+import { ReassignTicketDialog } from "#/components/common/ticket/reassign-ticket-dialog";
 import { ResolveTicketDialog } from "#/components/common/ticket/resolve-ticket-dialog";
 import { ViewResolutionDialog } from "#/components/common/ticket/view-resolution-dialog";
 import { ViewTicketDialog } from "#/components/common/ticket/view-ticket-dialog";
 import DataTable from "#/components/data-table";
+import type { ReassignmentInitiatorRole } from "#/lib/actions/ticket/types";
 
 export default function TicketsDatatable({
   tickets,
   role,
+  hubId,
   showCreateButton = true,
 }: {
   tickets: TicketData[];
   role: ImplementerRole;
+  hubId?: string;
   showCreateButton?: boolean;
 }) {
   const [_ticket, _setTicket] = useState<TicketData | undefined>();
   const [viewDialog, setViewDialog] = useState(false);
   const [resolutionDialog, setResolutionDialog] = useState<boolean | "view">(false);
   const [escalateDialog, setEscalateDialog] = useState(false);
+  const [reassignDialog, setReassignDialog] = useState(false);
 
   const ticket = useMemo(() => {
     if (_ticket) {
@@ -37,6 +42,7 @@ export default function TicketsDatatable({
       setViewDialog,
       setResolutionDialog,
       setEscalateDialog,
+      setReassignDialog,
       role,
     });
   }, [role]);
@@ -77,6 +83,15 @@ export default function TicketsDatatable({
           ticket={ticket}
           open={escalateDialog}
           onOpenChange={setEscalateDialog}
+        />
+      )}
+      {ticket && (
+        <ReassignTicketDialog
+          ticket={ticket}
+          hubId={hubId}
+          role={role as ReassignmentInitiatorRole}
+          open={reassignDialog}
+          onOpenChange={setReassignDialog}
         />
       )}
     </>
