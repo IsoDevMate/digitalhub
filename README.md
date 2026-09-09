@@ -109,7 +109,7 @@ npm run dev
 1. Open [http://localhost:3000](http://localhost:3000) in your browser
 2. Log in with test credentials:
    - **Email**: `martin.odegaard@test.com`
-   - **Password**: `TestPassword123!`
+   - **Password**: the value of `TEST_USER_PASSWORD` in your `.env.local`
 
 ---
 
@@ -162,8 +162,6 @@ CASEREPORTS_FILEID="google-drive-folder-id-for-case-reports"
 # S3_UPLOAD_KEY/SECRET are the IAM credentials used for all S3 buckets
 S3_UPLOAD_KEY="your-s3-upload-key"
 S3_UPLOAD_SECRET="your-s3-upload-secret"
-S3_UPLOAD_BUCKET="your-s3-bucket-name"
-S3_UPLOAD_REGION="your-aws-region"
 
 # S3 Recordings Bucket (Session Recordings)
 S3_RECORDINGS_BUCKET="your-recordings-bucket"
@@ -259,9 +257,9 @@ npm run db:seed
 
 **Option 1: Email/Password (Recommended for Development)**
 
-When `NEXT_PUBLIC_ENV=development`, use test credentials from seed data:
+When `NEXT_PUBLIC_ENV=development` and `TEST_USER_PASSWORD` is set, sign in as a seeded user:
 - Email: `martin.odegaard@test.com`
-- Password: `TestPassword123!`
+- Password: the value of `TEST_USER_PASSWORD`
 
 **Option 2: Google OAuth**
 
@@ -439,8 +437,6 @@ Configure these in your Vercel project settings:
 | `GOOGLE_SECRET` | Yes | Google OAuth Client Secret |
 | `S3_UPLOAD_KEY` | Yes | IAM access key used for all S3 buckets |
 | `S3_UPLOAD_SECRET` | Yes | IAM secret key used for all S3 buckets |
-| `S3_UPLOAD_BUCKET` | Yes | S3 bucket for uploads |
-| `S3_UPLOAD_REGION` | Yes | Region of the uploads bucket |
 | `S3_RECORDINGS_BUCKET` | Yes | S3 bucket for session recordings |
 | `S3_RECORDINGS_REGION` | No | Recordings bucket region (defaults to `af-south-1`) |
 | `S3_STUDENT_ATTENDANCE_BUCKET` | No | Bucket for attendance documents |

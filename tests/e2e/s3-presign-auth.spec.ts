@@ -1,16 +1,51 @@
 import { type APIRequestContext, expect, test } from "@playwright/test";
 
-import { PersonnelFixtures } from "#/tests/helpers";
+import { generateSessionToken, PersonnelFixtures } from "#/tests/helpers";
 
 /**
- * without a session. Does not PUT to S3. Does not hit production.
+ * Exercises POST /api/s3/presigned only. Does not PUT to S3. Does not hit production.
+ * Buckets follow lib/s3-buckets.ts: recordings (Supervisor, audio) and
+ * student-attendance (Fellow, pdf). There is no uploads bucket any more (#816).
  */
 const PRESIGN = "/api/s3/presigned";
 
-const benignBody = {
-  filename: "example.pdf",
+const SIZE = 1024;
+
+// PersonnelFixtures.fellow is seeded as ADMIN (fixture fix lands in #815), so
+// mint a session for a seeded FELLOW here instead of using the shared state file.
+const FELLOW_EMAIL = "bukayo.saka@test.com";
+
+async function fellowStorageState() {
+  const token = await generateSessionToken(FELLOW_EMAIL);
+  return {
+    cookies: [
+      {
+        name: "next-auth.session-token",
+        value: token,
+        domain: "localhost",
+        path: "/",
+        httpOnly: true,
+        secure: false,
+        sameSite: "Lax" as const,
+        expires: Math.floor(Date.now() / 1000) + 60 * 60,
+      },
+    ],
+    origins: [],
+  };
+}
+
+const attendanceBody = {
   contentType: "application/pdf",
-  bucket: "uploads" as const,
+  bucket: "student-attendance" as const,
+  key: "student-attendance/example.pdf",
+  size: SIZE,
+};
+
+const recordingBody = {
+  contentType: "audio/mpeg",
+  bucket: "recordings" as const,
+  key: "recordings/x.mp3",
+  size: SIZE,
 };
 
 async function postPresign(request: APIRequestContext, data: unknown) {
@@ -22,11 +57,18 @@ async function postPresign(request: APIRequestContext, data: unknown) {
 test.describe("S3 presign auth gate (unauthenticated)", () => {
   test.use({ storageState: { cookies: [], origins: [] } });
 
-  test("POST without a session returns 401 and no url", async ({ request }) => {
-    const { res, body } = await postPresign(request, benignBody);
+  test("POST student-attendance without a session returns 401 and no url", async ({ request }) => {
+    const { res, body } = await postPresign(request, attendanceBody);
 
     expect(res.status()).toBe(401);
     expect(body.error).toBe("Unauthorized");
+    expect(body.url).toBeUndefined();
+  });
+
+  test("POST recordings without a session returns 401 and no url", async ({ request }) => {
+    const { res, body } = await postPresign(request, recordingBody);
+
+    expect(res.status()).toBe(401);
     expect(body.url).toBeUndefined();
   });
 
@@ -38,74 +80,81 @@ test.describe("S3 presign auth gate (unauthenticated)", () => {
   });
 
   test("POST unknown bucket without a session returns 401", async ({ request }) => {
-    const { res, body } = await postPresign(request, { ...benignBody, bucket: "payments" });
-
-    expect(res.status()).toBe(401);
-    expect(body.url).toBeUndefined();
-  });
-
-  test("POST recordings without a session returns 401 and no url", async ({ request }) => {
-    const { res, body } = await postPresign(request, {
-      filename: "probe.txt",
-      contentType: "text/plain",
-      bucket: "recordings",
-    });
-
-    expect(res.status()).toBe(401);
-    expect(body.url).toBeUndefined();
-  });
-
-  test("POST student-attendance without a session returns 401 and no url", async ({ request }) => {
-    const { res, body } = await postPresign(request, {
-      filename: "probe.txt",
-      contentType: "text/plain",
-      bucket: "student-attendance",
-    });
+    const { res, body } = await postPresign(request, { ...attendanceBody, bucket: "payments" });
 
     expect(res.status()).toBe(401);
     expect(body.url).toBeUndefined();
   });
 });
 
-test.describe("S3 presign happy path (Fellow session)", () => {
-  test.use({ storageState: PersonnelFixtures.fellow.stateFile });
+test.describe("S3 presign student-attendance (Fellow session)", () => {
+  test.use({
+    // biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructuring pattern here
+    storageState: async ({}, use) => {
+      await use(await fellowStorageState());
+    },
+  });
 
-  test("authenticated Fellow can mint an uploads PutObject URL", async ({ request }) => {
-    const { res, body } = await postPresign(request, benignBody);
+  test("Fellow can mint a student-attendance URL with signed headers", async ({ request }) => {
+    const { res, body } = await postPresign(request, attendanceBody);
 
     expect(res.status()).toBe(200);
+    expect(body.key).toBe(attendanceBody.key);
+    expect(body.bucket).toBeDefined();
     expect(body.url).toEqual(expect.stringContaining("X-Amz-"));
     expect(body.url).toEqual(expect.stringMatching(/content-type/i));
     expect(body.url).toEqual(expect.stringMatching(/if-none-match/i));
-    expect(body.key).toEqual(expect.stringMatching(/^uploads\//));
-    expect(body.bucket).toBeDefined();
-    expect(body.region).toBeDefined();
+    expect(body.url).toEqual(expect.stringMatching(/content-length/i));
     expect(body.accessKeyId).toBeUndefined();
     expect(body.secretAccessKey).toBeUndefined();
   });
 
-  test("receipt zip content type is still accepted on uploads", async ({ request }) => {
+  test("uploads bucket no longer exists (schema 400)", async ({ request }) => {
     const { res, body } = await postPresign(request, {
-      ...benignBody,
-      filename: "receipt.zip",
-      contentType: "application/zip",
+      ...attendanceBody,
+      bucket: "uploads",
+      key: "uploads/example.pdf",
     });
 
-    expect(res.status()).toBe(200);
-    expect(body.url).toBeDefined();
+    expect(res.status()).toBe(400);
+    expect(body.error).toBe("Invalid request body");
+    expect(body.url).toBeUndefined();
   });
 
-  test("text/html content type is rejected", async ({ request }) => {
-    const { res, body } = await postPresign(request, { ...benignBody, contentType: "text/html" });
+  test("missing size is rejected by the schema", async ({ request }) => {
+    const { size: _size, ...withoutSize } = attendanceBody;
+    const { res, body } = await postPresign(request, withoutSize);
+
+    expect(res.status()).toBe(400);
+    expect(body.error).toBe("Invalid request body");
+    expect(body.url).toBeUndefined();
+  });
+
+  test("attendance rejects a file over the bucket maximum", async ({ request }) => {
+    const { res, body } = await postPresign(request, {
+      ...attendanceBody,
+      size: 25 * 1024 * 1024 + 1,
+    });
+
+    expect(res.status()).toBe(400);
+    expect(body.error).toBe("File too large");
+    expect(body.url).toBeUndefined();
+  });
+
+  test("attendance is pdf only: text/html is rejected", async ({ request }) => {
+    const { res, body } = await postPresign(request, {
+      ...attendanceBody,
+      contentType: "text/html",
+    });
 
     expect(res.status()).toBe(400);
     expect(body.error).toBe("Unsupported content type");
     expect(body.url).toBeUndefined();
   });
 
-  test("image/svg+xml content type is rejected", async ({ request }) => {
+  test("attendance is pdf only: image/svg+xml is rejected", async ({ request }) => {
     const { res, body } = await postPresign(request, {
-      ...benignBody,
+      ...attendanceBody,
       contentType: "image/svg+xml",
     });
 
@@ -114,8 +163,44 @@ test.describe("S3 presign happy path (Fellow session)", () => {
     expect(body.url).toBeUndefined();
   });
 
+  test("attendance is pdf only: audio/mpeg is rejected", async ({ request }) => {
+    const { res, body } = await postPresign(request, {
+      ...attendanceBody,
+      contentType: "audio/mpeg",
+    });
+
+    expect(res.status()).toBe(400);
+    expect(body.error).toBe("Unsupported content type");
+    expect(body.url).toBeUndefined();
+  });
+
   test("path traversal in key is rejected", async ({ request }) => {
-    const { res, body } = await postPresign(request, { ...benignBody, key: "uploads/../x" });
+    const { res, body } = await postPresign(request, {
+      ...attendanceBody,
+      key: "student-attendance/../x.pdf",
+    });
+
+    expect(res.status()).toBe(400);
+    expect(body.error).toBe("Invalid key");
+    expect(body.url).toBeUndefined();
+  });
+
+  test("student-attendance rejects a key under another prefix", async ({ request }) => {
+    const { res, body } = await postPresign(request, {
+      ...attendanceBody,
+      key: "recordings/example.pdf",
+    });
+
+    expect(res.status()).toBe(400);
+    expect(body.error).toBe("Invalid key");
+    expect(body.url).toBeUndefined();
+  });
+
+  test("student-attendance rejects a key containing empty path segments", async ({ request }) => {
+    const { res, body } = await postPresign(request, {
+      ...attendanceBody,
+      key: "student-attendance/school//x.pdf",
+    });
 
     expect(res.status()).toBe(400);
     expect(body.error).toBe("Invalid key");
@@ -123,78 +208,53 @@ test.describe("S3 presign happy path (Fellow session)", () => {
   });
 
   test("Fellow cannot mint a recordings URL", async ({ request }) => {
-    const { res, body } = await postPresign(request, {
-      filename: "x.mp3",
-      contentType: "audio/mpeg",
-      bucket: "recordings",
-      key: "recordings/x.mp3",
-    });
+    const { res, body } = await postPresign(request, recordingBody);
 
     expect(res.status()).toBe(403);
-    expect(body.url).toBeUndefined();
-  });
-
-  test("Fellow can mint a student-attendance URL with the correct prefix", async ({ request }) => {
-    const { res, body } = await postPresign(request, {
-      filename: "attendance.pdf",
-      contentType: "application/pdf",
-      bucket: "student-attendance",
-      key: "student-attendance/example.pdf",
-    });
-
-    expect(res.status()).toBe(200);
-    expect(body.key).toBe("student-attendance/example.pdf");
-    expect(body.url).toEqual(expect.stringMatching(/content-type/i));
-    expect(body.url).toEqual(expect.stringMatching(/if-none-match/i));
-  });
-
-  test("student-attendance without a key is rejected", async ({ request }) => {
-    const { res, body } = await postPresign(request, {
-      filename: "attendance.pdf",
-      contentType: "application/pdf",
-      bucket: "student-attendance",
-    });
-
-    expect(res.status()).toBe(400);
-    expect(body.error).toBe("Invalid key");
-    expect(body.url).toBeUndefined();
-  });
-
-  test("student-attendance rejects an uploads/ key", async ({ request }) => {
-    const { res, body } = await postPresign(request, {
-      filename: "attendance.pdf",
-      contentType: "application/pdf",
-      bucket: "student-attendance",
-      key: "uploads/example.pdf",
-    });
-
-    expect(res.status()).toBe(400);
-    expect(body.error).toBe("Invalid key");
+    expect(body.error).toBe("Forbidden");
     expect(body.url).toBeUndefined();
   });
 });
 
-test.describe("S3 presign recordings prefix (Supervisor session)", () => {
+test.describe("S3 presign recordings (Supervisor session)", () => {
   test.use({ storageState: PersonnelFixtures.supervisor.stateFile });
 
-  test("recordings without a key is rejected", async ({ request }) => {
+  test("Supervisor can mint a recordings URL with signed headers", async ({ request }) => {
+    const { res, body } = await postPresign(request, recordingBody);
+
+    expect(res.status()).toBe(200);
+    expect(body.key).toBe(recordingBody.key);
+    expect(body.url).toEqual(expect.stringMatching(/content-type/i));
+    expect(body.url).toEqual(expect.stringMatching(/if-none-match/i));
+    expect(body.url).toEqual(expect.stringMatching(/content-length/i));
+  });
+
+  test("recordings is audio only: application/pdf is rejected", async ({ request }) => {
     const { res, body } = await postPresign(request, {
-      filename: "x.mp3",
-      contentType: "audio/mpeg",
-      bucket: "recordings",
+      ...recordingBody,
+      contentType: "application/pdf",
     });
 
     expect(res.status()).toBe(400);
-    expect(body.error).toBe("Invalid key");
+    expect(body.error).toBe("Unsupported content type");
     expect(body.url).toBeUndefined();
   });
 
-  test("recordings bucket rejects an uploads/ key", async ({ request }) => {
+  test("recordings is audio only: text/html is rejected", async ({ request }) => {
     const { res, body } = await postPresign(request, {
-      filename: "x.mp3",
-      contentType: "audio/mpeg",
-      bucket: "recordings",
-      key: "uploads/x",
+      ...recordingBody,
+      contentType: "text/html",
+    });
+
+    expect(res.status()).toBe(400);
+    expect(body.error).toBe("Unsupported content type");
+    expect(body.url).toBeUndefined();
+  });
+
+  test("recordings rejects a key under another prefix", async ({ request }) => {
+    const { res, body } = await postPresign(request, {
+      ...recordingBody,
+      key: "student-attendance/x.mp3",
     });
 
     expect(res.status()).toBe(400);
@@ -204,9 +264,7 @@ test.describe("S3 presign recordings prefix (Supervisor session)", () => {
 
   test("recordings rejects a key containing empty path segments", async ({ request }) => {
     const { res, body } = await postPresign(request, {
-      filename: "x.mp3",
-      contentType: "audio/mpeg",
-      bucket: "recordings",
+      ...recordingBody,
       key: "recordings/school//x.mp3",
     });
 
@@ -215,27 +273,8 @@ test.describe("S3 presign recordings prefix (Supervisor session)", () => {
     expect(body.url).toBeUndefined();
   });
 
-  test("Supervisor can mint a recordings URL with the correct prefix", async ({ request }) => {
-    const { res, body } = await postPresign(request, {
-      filename: "x.mp3",
-      contentType: "audio/mpeg",
-      bucket: "recordings",
-      key: "recordings/x.mp3",
-    });
-
-    expect(res.status()).toBe(200);
-    expect(body.key).toBe("recordings/x.mp3");
-    expect(body.url).toEqual(expect.stringMatching(/content-type/i));
-    expect(body.url).toEqual(expect.stringMatching(/if-none-match/i));
-  });
-
   test("Supervisor cannot mint a student-attendance URL", async ({ request }) => {
-    const { res, body } = await postPresign(request, {
-      filename: "attendance.pdf",
-      contentType: "application/pdf",
-      bucket: "student-attendance",
-      key: "student-attendance/example.pdf",
-    });
+    const { res, body } = await postPresign(request, attendanceBody);
 
     expect(res.status()).toBe(403);
     expect(body.error).toBe("Forbidden");

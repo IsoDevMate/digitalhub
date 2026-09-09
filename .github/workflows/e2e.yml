@@ -14,8 +14,6 @@ env:
   AWS_REGION: af-south-1
   S3_UPLOAD_KEY: mock-s3-upload-key
   S3_UPLOAD_SECRET: mock-s3-upload-secret
-  S3_UPLOAD_BUCKET: mock-s3-upload-bucket
-  S3_UPLOAD_REGION: af-south-1
   S3_RECORDINGS_BUCKET: mock-s3-recordings-bucket
   S3_RECORDINGS_REGION: af-south-1
   S3_STUDENT_ATTENDANCE_BUCKET: mock-s3-attendance-bucket
@@ -26,6 +24,7 @@ env:
   DATABASE_URL: postgres://youth:thriving@localhost:5432/shamiri_db?pool_timeout=30
   NEXT_PUBLIC_APP_URL: http://localhost:3000
   NEXT_PUBLIC_ENV: development
+  TEST_USER_PASSWORD: TestPassword123!
   
 jobs:
   e2e-tests:

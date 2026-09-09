@@ -1,71 +1,58 @@
-import { randomUUID } from "node:crypto";
-import path from "node:path";
-import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { ImplementerRole } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { ALLOWED_AUDIO_TYPES } from "#/app/(platform)/sc/reporting/recordings/schemas";
+import { ALLOWED_AUDIO_TYPES, MAX_FILE_SIZE } from "#/app/(platform)/sc/reporting/recordings/schemas";
 import { requireAuthRole } from "#/lib/auth/require-auth-role";
 import { getCachedSession } from "#/lib/auth-options";
-import { getBucketName, getBucketRegion, getS3Client, type S3Bucket } from "#/lib/s3";
+import { getPresignedUploadUrl } from "#/lib/s3";
+import { S3_BUCKETS, type S3Bucket } from "#/lib/s3-buckets";
 
 // Mint PutObject URLs only. proxy.ts skips /api/*, so auth must live here.
 
-const S3_BUCKETS = [
-  "uploads",
-  "recordings",
-  "student-attendance",
-] as const satisfies readonly S3Bucket[];
-
 const RequestSchema = z.object({
-  filename: z.string().min(1),
   contentType: z.string(),
-  key: z.string().optional(),
-  bucket: z.enum(S3_BUCKETS).default("uploads"),
+  key: z.string(),
+  bucket: z.enum(S3_BUCKETS),
+  size: z.number().int().positive(),
 });
 
-const ALLOWED_CONTENT_TYPES = new Set<string>([
-  "application/pdf",
-  "application/octet-stream",
-  "text/csv",
-  "text/plain",
-  "application/msword",
-  "application/vnd.ms-excel",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "application/zip",
-  "application/x-zip-compressed",
-  "application/json",
-  "application/rtf",
-  "text/rtf",
-  "message/rfc822",
-  "application/vnd.ms-outlook",
-  "application/vnd.oasis.opendocument.text",
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/heic",
-  "image/gif",
-  ...ALLOWED_AUDIO_TYPES,
-]);
+// Bucket-specific allowlists. A URL minted for one bucket cannot carry a
+// content type that bucket should never store.
+const ATTENDANCE_CONTENT_TYPES = new Set<string>(["application/pdf"]);
+const RECORDINGS_CONTENT_TYPES = new Set<string>(ALLOWED_AUDIO_TYPES);
 
-function isAllowedContentType(contentType: string): boolean {
-  const normalized = contentType.toLowerCase().split(";")[0]?.trim() ?? "";
-  return ALLOWED_CONTENT_TYPES.has(normalized);
+// Per-bucket maximum body size, enforced by S3 via the signed content-length.
+const ATTENDANCE_MAX_BYTES = 25 * 1024 * 1024;
+const BUCKET_MAX_BYTES: Record<S3Bucket, number> = {
+  recordings: MAX_FILE_SIZE,
+  "student-attendance": ATTENDANCE_MAX_BYTES,
+};
+
+function allowedContentTypes(bucket: S3Bucket): Set<string> {
+  return bucket === "recordings" ? RECORDINGS_CONTENT_TYPES : ATTENDANCE_CONTENT_TYPES;
 }
 
-function sanitizeFilename(filename: string): string {
-  return path.posix.basename(filename).replace(/[^0-9a-zA-Z!_.*'()-]/g, "-");
+function isAllowedContentType(bucket: S3Bucket, contentType: string): boolean {
+  const normalized = contentType.toLowerCase().split(";")[0]?.trim() ?? "";
+  return allowedContentTypes(bucket).has(normalized);
 }
 
 function sanitizeObjectKey(key: string): string {
   return key.replace(/[^0-9a-zA-Z!_.*'()\-/]/g, "-");
 }
 
-function allowedPrefixesForBucket(bucket: S3Bucket): string[] {
-  return [`${bucket}/`];
+// Callers pass a key they built. Do not accept an arbitrary path: no traversal,
+// no empty segments, and it must stay under the bucket's own prefix.
+function resolveObjectKey(providedKey: string, bucket: S3Bucket): string {
+  const key = sanitizeObjectKey(providedKey);
+  if (!key || key.startsWith("/") || key.includes("..") || key.includes("//")) {
+    throw new Error("Invalid key");
+  }
+  if (!key.startsWith(`${bucket}/`)) {
+    throw new Error("Invalid key");
+  }
+  return key;
 }
 
 async function assertBucketRole(bucket: S3Bucket): Promise<void> {
@@ -73,49 +60,30 @@ async function assertBucketRole(bucket: S3Bucket): Promise<void> {
     await requireAuthRole(ImplementerRole.SUPERVISOR);
     return;
   }
-  if (bucket === "student-attendance") {
-    await requireAuthRole(ImplementerRole.FELLOW);
-  }
-}
-
-function resolveObjectKey(opts: {
-  providedKey: string | undefined;
-  filename: string;
-  bucket: S3Bucket;
-  userId: string;
-}): string {
-  const prefixes = allowedPrefixesForBucket(opts.bucket);
-
-  if (!opts.providedKey) {
-    if (opts.bucket !== "uploads") {
-      throw new Error("Invalid key");
-    }
-    const filename = sanitizeFilename(opts.filename);
-    if (!filename) {
-      throw new Error("Invalid key");
-    }
-    // New objects only. Existing prod keys stay uploads/<uuid>/<file> — we do not rewrite them.
-    return `${opts.bucket}/${opts.userId}/${randomUUID()}/${filename}`;
-  }
-
-  // Recordings / attendance pass a key they built. Do not take an arbitrary path.
-  const key = sanitizeObjectKey(opts.providedKey);
-  if (!key || key.startsWith("/") || key.includes("..") || key.includes("//")) {
-    throw new Error("Invalid key");
-  }
-  if (!prefixes.some((prefix) => key.startsWith(prefix))) {
-    throw new Error("Invalid key");
-  }
-  return key;
+  await requireAuthRole(ImplementerRole.FELLOW);
 }
 
 function jsonError(status: number, error: string) {
   return NextResponse.json({ error }, { status });
 }
 
+// redirect() from the auth helpers (getCurrentUserSession, #812/#814) throws a
+// control-flow error we must re-raise, or Next cannot perform the redirect and
+// the route returns a 500 instead.
+function isRedirectError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "digest" in error &&
+    typeof (error as { digest?: unknown }).digest === "string" &&
+    (error as { digest: string }).digest.startsWith("NEXT_REDIRECT")
+  );
+}
+
 export async function POST(request: Request) {
   try {
-    // Reject a session that has no user id. A missing session is already 401.
+    // Fail closed before parse/sign. Keep the 401 ahead of zod so an
+    // unauthenticated caller never learns whether the body was valid.
     const session = await getCachedSession();
     if (!session?.user?.id) {
       return jsonError(401, "Unauthorized");
@@ -131,45 +99,29 @@ export async function POST(request: Request) {
       );
     }
 
-    const { filename, contentType, key: providedKey, bucket } = parsed.data;
+    const { contentType, key: providedKey, bucket, size } = parsed.data;
 
     await assertBucketRole(bucket);
 
-    if (!isAllowedContentType(contentType)) {
+    if (!isAllowedContentType(bucket, contentType)) {
       return jsonError(400, "Unsupported content type");
     }
 
-    const key = resolveObjectKey({
-      providedKey,
-      filename,
-      bucket,
-      userId: session.user.id,
+    if (size > BUCKET_MAX_BYTES[bucket]) {
+      return jsonError(400, "File too large");
+    }
+
+    const key = resolveObjectKey(providedKey, bucket);
+
+    const { url, bucket: bucketName } = await getPresignedUploadUrl(key, bucket, contentType, {
+      contentLength: size,
     });
 
-    const client = getS3Client(bucket);
-    const bucketName = getBucketName(bucket);
-    const region = getBucketRegion(bucket);
-
-    const command = new PutObjectCommand({
-      Bucket: bucketName,
-      Key: key,
-      ContentType: contentType,
-      CacheControl: "max-age=630720000",
-      IfNoneMatch: "*",
-    });
-
-    const url = await getSignedUrl(client, command, {
-      expiresIn: 3600,
-      signableHeaders: new Set(["content-type", "if-none-match"]),
-    });
-
-    return NextResponse.json({
-      url,
-      key,
-      bucket: bucketName,
-      region,
-    });
+    return NextResponse.json({ url, key, bucket: bucketName });
   } catch (error) {
+    if (isRedirectError(error)) {
+      throw error;
+    }
     if (error instanceof Error) {
       if (error.message === "Invalid key") {
         return jsonError(400, error.message);

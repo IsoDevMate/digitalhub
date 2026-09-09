@@ -3,14 +3,11 @@
 import type React from "react";
 import { useCallback, useRef, useState } from "react";
 
-export interface UploadOptions {
-  endpoint?: {
-    request?: {
-      url?: string;
-      body?: Record<string, unknown>;
-      headers?: Record<string, string>;
-    };
-  };
+import { S3_BUCKETS, type S3Bucket } from "#/lib/s3-buckets";
+
+export interface UploadTarget {
+  key: string;
+  bucket: S3Bucket;
 }
 
 export interface UploadResult {
@@ -85,39 +82,28 @@ export function useS3Upload() {
   }, []);
 
   const uploadToS3 = useCallback(
-    async (file: File, options?: UploadOptions): Promise<UploadResult> => {
-      const requestBody = options?.endpoint?.request?.body ?? {};
-      const requestHeaders = options?.endpoint?.request?.headers ?? {};
+    async (file: File, target: UploadTarget): Promise<UploadResult> => {
+      if (!S3_BUCKETS.includes(target?.bucket)) {
+        throw new Error(
+          `uploadToS3 requires an explicit bucket (${S3_BUCKETS.join(" or ")}); received ${String(target?.bucket)}`,
+        );
+      }
+      if (!target.key) {
+        throw new Error("uploadToS3 requires an explicit object key");
+      }
 
       // Use application/octet-stream as fallback for files with unknown MIME types
       const contentType = file.type || "application/octet-stream";
 
-      const providedKey = typeof requestBody.key === "string" ? requestBody.key : undefined;
-      const requestedBucket = requestBody.bucket;
-      const bucket =
-        requestedBucket === "recordings" ||
-        requestedBucket === "student-attendance" ||
-        requestedBucket === "uploads"
-          ? requestedBucket
-          : providedKey?.startsWith("recordings/")
-            ? "recordings"
-            : providedKey?.startsWith("student-attendance/")
-              ? "student-attendance"
-              : "uploads";
-
-      // Get presigned URL from our unified API
+      // size is signed into the URL, so the PUT body must be exactly this long.
       const presignedResponse = await fetch("/api/s3/presigned", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...requestHeaders,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          ...requestBody,
-          filename: file.name,
           contentType,
-          bucket,
-          key: providedKey,
+          key: target.key,
+          bucket: target.bucket,
+          size: file.size,
         }),
       });
 
