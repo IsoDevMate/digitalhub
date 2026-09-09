@@ -1,4 +1,5 @@
 import { ImplementerRole } from "@prisma/client";
+import { isRedirectError } from "next/dist/client/components/redirect-error";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -25,11 +26,11 @@ const RequestSchema = z.object({
 const ATTENDANCE_CONTENT_TYPES = new Set<string>(["application/pdf"]);
 const RECORDINGS_CONTENT_TYPES = new Set<string>(ALLOWED_AUDIO_TYPES);
 
-// Per-bucket maximum body size, enforced by S3 via the signed content-length.
-const ATTENDANCE_MAX_BYTES = 25 * 1024 * 1024;
+// Same 500 MB cap the recordings UI already enforces. Attendance has no
+// separate client limit; a phone-photo PDF can exceed a tighter number.
 const BUCKET_MAX_BYTES: Record<S3Bucket, number> = {
   recordings: MAX_FILE_SIZE,
-  "student-attendance": ATTENDANCE_MAX_BYTES,
+  "student-attendance": MAX_FILE_SIZE,
 };
 
 function allowedContentTypes(bucket: S3Bucket): Set<string> {
@@ -68,19 +69,6 @@ async function assertBucketRole(bucket: S3Bucket): Promise<void> {
 
 function jsonError(status: number, error: string) {
   return NextResponse.json({ error }, { status });
-}
-
-// redirect() from the auth helpers (getCurrentUserSession, #812/#814) throws a
-// control-flow error we must re-raise, or Next cannot perform the redirect and
-// the route returns a 500 instead.
-function isRedirectError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "digest" in error &&
-    typeof (error as { digest?: unknown }).digest === "string" &&
-    (error as { digest: string }).digest.startsWith("NEXT_REDIRECT")
-  );
 }
 
 export async function POST(request: Request) {
@@ -122,6 +110,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ url, key, bucket: bucketName });
   } catch (error) {
+    // getCurrentUserSession() calls redirect() when there is no active
+    // membership (#812/#814). Re-throw so Next can follow it instead of 500.
     if (isRedirectError(error)) {
       throw error;
     }

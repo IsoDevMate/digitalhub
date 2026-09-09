@@ -133,7 +133,7 @@ test.describe("S3 presign student-attendance (Fellow session)", () => {
   test("attendance rejects a file over the bucket maximum", async ({ request }) => {
     const { res, body } = await postPresign(request, {
       ...attendanceBody,
-      size: 25 * 1024 * 1024 + 1,
+      size: 500 * 1024 * 1024 + 1,
     });
 
     expect(res.status()).toBe(400);
@@ -214,6 +214,60 @@ test.describe("S3 presign student-attendance (Fellow session)", () => {
     expect(body.error).toBe("Forbidden");
     expect(body.url).toBeUndefined();
   });
+
+  test("zero-byte size is rejected by the schema", async ({ request }) => {
+    const { res, body } = await postPresign(request, { ...attendanceBody, size: 0 });
+
+    expect(res.status()).toBe(400);
+    expect(body.error).toBe("Invalid request body");
+    expect(body.url).toBeUndefined();
+  });
+
+  test("size sent as a string is rejected by the schema", async ({ request }) => {
+    const { res, body } = await postPresign(request, { ...attendanceBody, size: "1024" });
+
+    expect(res.status()).toBe(400);
+    expect(body.error).toBe("Invalid request body");
+    expect(body.url).toBeUndefined();
+  });
+
+  test("empty key is rejected", async ({ request }) => {
+    const { res, body } = await postPresign(request, { ...attendanceBody, key: "" });
+
+    expect(res.status()).toBe(400);
+    expect(body.url).toBeUndefined();
+  });
+
+  test("key with a leading slash is rejected", async ({ request }) => {
+    const { res, body } = await postPresign(request, {
+      ...attendanceBody,
+      key: "/student-attendance/x.pdf",
+    });
+
+    expect(res.status()).toBe(400);
+    expect(body.error).toBe("Invalid key");
+    expect(body.url).toBeUndefined();
+  });
+
+  test("content-type with a charset parameter is still accepted", async ({ request }) => {
+    const { res, body } = await postPresign(request, {
+      ...attendanceBody,
+      contentType: "application/pdf; charset=utf-8",
+    });
+
+    expect(res.status()).toBe(200);
+    expect(body.url).toBeDefined();
+  });
+
+  test("extra filename field is ignored (callers used to send it)", async ({ request }) => {
+    const { res, body } = await postPresign(request, {
+      ...attendanceBody,
+      filename: "legacy.pdf",
+    });
+
+    expect(res.status()).toBe(200);
+    expect(body.key).toBe(attendanceBody.key);
+  });
 });
 
 test.describe("S3 presign recordings (Supervisor session)", () => {
@@ -279,5 +333,50 @@ test.describe("S3 presign recordings (Supervisor session)", () => {
     expect(res.status()).toBe(403);
     expect(body.error).toBe("Forbidden");
     expect(body.url).toBeUndefined();
+  });
+
+  test("recordings rejects a file over the 500MB maximum", async ({ request }) => {
+    const { res, body } = await postPresign(request, {
+      ...recordingBody,
+      size: 500 * 1024 * 1024 + 1,
+    });
+
+    expect(res.status()).toBe(400);
+    expect(body.error).toBe("File too large");
+    expect(body.url).toBeUndefined();
+  });
+});
+
+test.describe("S3 presign other roles", () => {
+  test.describe("Hub coordinator session", () => {
+    test.use({ storageState: PersonnelFixtures.hubCoordinator.stateFile });
+
+    test("cannot mint recordings", async ({ request }) => {
+      const { res, body } = await postPresign(request, recordingBody);
+      expect(res.status()).toBe(403);
+      expect(body.url).toBeUndefined();
+    });
+
+    test("cannot mint student-attendance", async ({ request }) => {
+      const { res, body } = await postPresign(request, attendanceBody);
+      expect(res.status()).toBe(403);
+      expect(body.url).toBeUndefined();
+    });
+  });
+
+  test.describe("Admin session (shared fellow fixture email)", () => {
+    test.use({ storageState: PersonnelFixtures.fellow.stateFile });
+
+    test("ADMIN cannot mint student-attendance as if they were a Fellow", async ({ request }) => {
+      const { res, body } = await postPresign(request, attendanceBody);
+      expect(res.status()).toBe(403);
+      expect(body.url).toBeUndefined();
+    });
+
+    test("ADMIN cannot mint recordings", async ({ request }) => {
+      const { res, body } = await postPresign(request, recordingBody);
+      expect(res.status()).toBe(403);
+      expect(body.url).toBeUndefined();
+    });
   });
 });
