@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [1.41.0](https://github.com/Shamiri-Institute/digitalhub/compare/v1.40.0...v1.41.0) (2026-10-12)
+
+### Features
+
+- **admin:** add implementer super admins and admin teams ([#911](https://github.com/Shamiri-Institute/digitalhub/issues/911)) ([b713875](https://github.com/Shamiri-Institute/digitalhub/commit/b71387509b400c7dfd07358f47f22807ba0b2c7c))
+
+### Bug Fixes
+
+- **admin:** order admin hubs and their schools by name ([#939](https://github.com/Shamiri-Institute/digitalhub/issues/939)) ([41b98af](https://github.com/Shamiri-Institute/digitalhub/commit/41b98af8d1946068c40f4e7092b0c8d2774c6eda))
+
 ## [1.40.0](https://github.com/Shamiri-Institute/digitalhub/compare/v1.39.3...v1.40.0) (2026-10-09)
 
 ### Features
