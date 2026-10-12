@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [1.41.1](https://github.com/Shamiri-Institute/digitalhub/compare/v1.41.0...v1.41.1) (2026-10-12)
+
+### Bug Fixes
+
+- **forms:** keep typed input when saved data loads, remove duplicate ratings component and update test structures. ([#940](https://github.com/Shamiri-Institute/digitalhub/issues/940)) ([8e9eccf](https://github.com/Shamiri-Institute/digitalhub/commit/8e9eccf0bc75b62f4459f6e02a4a2ae6139b0167))
+
 ## [1.41.0](https://github.com/Shamiri-Institute/digitalhub/compare/v1.40.0...v1.41.0) (2026-10-12)
 
 ### Features
