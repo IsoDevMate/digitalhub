@@ -1,22 +1,21 @@
-import { type BrowserContext, expect, type Locator, type Page, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { eq, sql } from "drizzle-orm";
 
 import { db } from "#/db/client";
 import { fellow, interventionGroupReport, sessionRecording } from "#/db/schema";
 import { sessionDisplayName } from "#/lib/utils";
 import { signableMember, signInWithEmail } from "#/tests/helpers";
-import { getUrl } from "#/tests/pages/helpers";
+import { getUrl, chooseRowAction, rowWithCell } from "#/tests/pages/helpers";
 
 /**
  * Each write checks that its record is in the caller's scope: a fellow evaluates a group they
  * lead for a session at its school, a supervisor edits a recording of a group their fellow leads
  * at an occurred session, and a hub coordinator reassigns a fellow of their organisation. Each
- * test saves through the UI, reloads and checks what the page shows. The database is read only to
- * pick fixtures, to read a saved value back and to put rows back.
+ * test saves through the UI, reloads and checks what the page shows. The database picks fixtures,
+ * puts rows back, and reads the one value no page shows: an evaluation's star rating.
  */
 
-// The dev server compiles each page on first use, which can take longer than the default.
-test.describe.configure({ mode: "serial", timeout: 3 * 60 * 1000 });
+test.describe.configure({ mode: "serial" });
 
 type EvaluationFixture = {
   email: string;
@@ -45,7 +44,6 @@ let evaluation: EvaluationFixture;
 let recording: RecordingFixture;
 let reassign: ReassignFixture;
 
-/** Only users with one membership, in an organisation that runs the default project. */
 test.beforeAll(async () => {
   // A group with no evaluations yet, and an occurred session whose name is unique at its school.
   const {
@@ -74,7 +72,6 @@ test.beforeAll(async () => {
   };
 
   // The edit keeps the recording's fellow, group and session, which must be an occurred one.
-  // recordings-status-api.spec.ts borrows the first three recordings by id, so skip those.
   const {
     rows: [supervisedRecording],
   } = await db.execute<RecordingFixture>(sql`
@@ -90,8 +87,6 @@ test.beforeAll(async () => {
     join implementer_members m on m.identifier = r.supervisor_id and m.role = 'SUPERVISOR'
     join users u on u.id = m.user_id and u.email is not null
     where ${signableMember()} and r.archived_at is null
-      and r.id not in (
-        select o.id from session_recordings o where o.archived_at is null order by o.id limit 3)
     order by r.id desc
     limit 1`);
   if (!supervisedRecording) {
@@ -134,27 +129,6 @@ test.afterEach(async () => {
   undo = [];
 });
 
-async function signIn(context: BrowserContext, email: string) {
-  await context.clearCookies();
-  await signInWithEmail(context, email);
-}
-
-/** A row by the exact text of one of its cells, after searching the table for it. */
-async function rowWithCell(page: Page, scope: Locator, text: string) {
-  await scope.getByPlaceholder("Search...").fill(text);
-  return scope
-    .getByRole("row")
-    .filter({ has: page.getByRole("cell", { name: text, exact: true }) });
-}
-
-/** Opens a row's actions menu. Rows re-render while their data loads, so retry the click. */
-async function openRowMenu(page: Page, row: Locator) {
-  await expect(async () => {
-    await row.getByRole("cell").last().click();
-    await expect(page.getByRole("menu")).toBeVisible({ timeout: 2000 });
-  }).toPass({ timeout: 30_000 });
-}
-
 test("a fellow evaluates a group they lead", async ({ page, context }) => {
   const comment = `e2e-scoped-write-${Date.now()}`;
   undo.push(() =>
@@ -162,15 +136,16 @@ test("a fellow evaluates a group they lead", async ({ page, context }) => {
       .delete(interventionGroupReport)
       .where(eq(interventionGroupReport.groupId, evaluation.groupId)),
   );
-  await signIn(context, evaluation.email);
+  await signInWithEmail(context, evaluation.email);
   const main = page.getByRole("main");
   const dialog = page.getByRole("dialog", { name: "Student group evaluation" });
   async function openEvaluation() {
-    await page.goto(getUrl(`/fel/schools/${evaluation.visibleId}/group`), {
-      waitUntil: "networkidle",
-    });
-    await openRowMenu(page, await rowWithCell(page, main, evaluation.groupName));
-    await page.getByRole("menuitem", { name: "View student group evaluation" }).click();
+    await page.goto(getUrl(`/fel/schools/${evaluation.visibleId}/group`));
+    await chooseRowAction(
+      page,
+      await rowWithCell(page, main, evaluation.groupName),
+      "View student group evaluation",
+    );
   }
 
   await openEvaluation();
@@ -179,9 +154,8 @@ test("a fellow evaluates a group they lead", async ({ page, context }) => {
     .getByRole("option")
     .filter({ hasText: `${evaluation.sessionLabel} - ` })
     .click();
-  // The star buttons are unlabelled and laid out in reverse: the first one gives five stars.
-  for (const rating of await dialog.locator(".rating-stars").all()) {
-    await rating.getByRole("button").first().click();
+  for (const fiveStars of await dialog.getByRole("button", { name: "5 out of 5" }).all()) {
+    await fiveStars.click();
   }
   for (const commentBox of await dialog.getByRole("textbox").all()) {
     await commentBox.fill(comment);
@@ -192,14 +166,12 @@ test("a fellow evaluates a group they lead", async ({ page, context }) => {
   await openEvaluation();
   await expect(dialog.getByRole("combobox")).toContainText(evaluation.sessionLabel);
   await expect(dialog.getByRole("textbox").first()).toHaveValue(comment);
+  // The stars show a saved rating only by their colour.
   const [savedReport] = await db
-    .select({
-      sessionId: interventionGroupReport.sessionId,
-      content: interventionGroupReport.content,
-    })
+    .select({ content: interventionGroupReport.content })
     .from(interventionGroupReport)
     .where(eq(interventionGroupReport.groupId, evaluation.groupId));
-  expect(savedReport).toEqual({ sessionId: evaluation.sessionId, content: 5 });
+  expect(savedReport).toEqual({ content: 5 });
 });
 
 test("a supervisor renames a recording of their fellow's group", async ({ page, context }) => {
@@ -210,16 +182,15 @@ test("a supervisor renames a recording of their fellow's group", async ({ page, 
       .set({ originalFileName: recording.originalFileName })
       .where(eq(sessionRecording.id, recording.recordingId)),
   );
-  await signIn(context, recording.email);
+  await signInWithEmail(context, recording.email);
   const main = page.getByRole("main");
   const dialog = page.getByRole("dialog", { name: "Edit recording" });
   async function openEdit() {
-    await page.goto(getUrl("/sc/reporting/recordings"), { waitUntil: "networkidle" });
+    await page.goto(getUrl("/sc/reporting/recordings"));
     const recordingRow = (await rowWithCell(page, main, recording.groupName)).filter({
       has: page.getByRole("cell", { name: recording.sessionName, exact: true }),
     });
-    await openRowMenu(page, recordingRow);
-    await page.getByRole("menuitem", { name: "Edit" }).click();
+    await chooseRowAction(page, recordingRow, "Edit");
     // The dialog resets its form once its lists load; wait for the session to show.
     await expect(dialog.getByRole("combobox", { name: /^Session/ })).toContainText(
       sessionDisplayName(recording.sessionName) ?? recording.sessionName,
@@ -233,11 +204,6 @@ test("a supervisor renames a recording of their fellow's group", async ({ page, 
 
   await openEdit();
   await expect(dialog.getByRole("textbox", { name: /Recording name/ })).toHaveValue(newFileName);
-  const [savedRecording] = await db
-    .select({ originalFileName: sessionRecording.originalFileName })
-    .from(sessionRecording)
-    .where(eq(sessionRecording.id, recording.recordingId));
-  expect(savedRecording?.originalFileName).toBe(newFileName);
 });
 
 test("a hub coordinator assigns a fellow of their hub to another supervisor", async ({
@@ -250,9 +216,9 @@ test("a hub coordinator assigns a fellow of their hub to another supervisor", as
       .set({ supervisorId: reassign.originalSupervisorId })
       .where(eq(fellow.id, reassign.fellowId)),
   );
-  await signIn(context, reassign.email);
+  await signInWithEmail(context, reassign.email);
   const main = page.getByRole("main");
-  await page.goto(getUrl("/hc/fellows"), { waitUntil: "networkidle" });
+  await page.goto(getUrl("/hc/fellows"));
 
   const fellowRow = await rowWithCell(page, main, reassign.fellowName);
   await fellowRow.getByRole("combobox").click();
@@ -266,7 +232,7 @@ test("a hub coordinator assigns a fellow of their hub to another supervisor", as
     ),
   ).toBeVisible();
 
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload();
   await expect(
     (await rowWithCell(page, main, reassign.fellowName)).getByRole("combobox"),
   ).toHaveText(reassign.newSupervisorName);

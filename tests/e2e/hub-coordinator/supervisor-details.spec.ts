@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { db } from "#/db/client";
 import { supervisor, user } from "#/db/schema";
 import { emailForProfile, signInWithEmail } from "#/tests/helpers";
-import { getUrl, searchRows } from "#/tests/pages/helpers";
+import { getUrl, chooseRowAction, searchRows } from "#/tests/pages/helpers";
 
 /**
  * A hub coordinator edits the supervisors of their own hub through the UI. The edit form also
@@ -17,14 +17,14 @@ let targetUserId: string;
 let ownHubEmail: string;
 let otherHubEmail: string;
 
-// The dev server compiles each page on first use, which can take longer than the default.
-test.describe.configure({ mode: "serial", timeout: 3 * 60 * 1000 });
+test.describe.configure({ mode: "serial" });
 
 test.beforeAll(async () => {
   const [supervisors, coordinators] = await Promise.all([
+    // From the last supervisor down: other specs pick supervisors from the first, by name.
     db.query.supervisor.findMany({
       where: (s, { isNotNull }) => isNotNull(s.hubId),
-      orderBy: (s, { asc }) => asc(s.id),
+      orderBy: (s, { desc }) => desc(s.id),
     }),
     db.query.hubCoordinator.findMany({
       where: (hc, { isNotNull }) => isNotNull(hc.assignedHubId),
@@ -34,6 +34,13 @@ test.beforeAll(async () => {
   ]);
 
   for (const candidate of supervisors) {
+    // The form writes the login email of the profile's user, so skip profiles shared by users.
+    const members = await db.query.implementerMember.findMany({
+      where: (m, { and, eq }) => and(eq(m.identifier, candidate.id), eq(m.role, "SUPERVISOR")),
+      columns: { userId: true },
+    });
+    const [onlyMember] = members;
+    if (members.length !== 1 || !onlyMember) continue;
     const email = await emailForProfile(candidate.id, "SUPERVISOR");
     const own = coordinators.find((hc) => hc.assignedHubId === candidate.hubId);
     const other = coordinators.find((hc) => hc.assignedHubId !== candidate.hubId);
@@ -42,19 +49,13 @@ test.beforeAll(async () => {
     if (email && ownEmail && otherEmail) {
       target = candidate;
       targetEmail = email;
+      targetUserId = onlyMember.userId;
       ownHubEmail = ownEmail;
       otherHubEmail = otherEmail;
       break;
     }
   }
   if (!target) throw new Error("seed the database first: no supervisor with coordinators");
-
-  const member = await db.query.implementerMember.findFirst({
-    where: (m, { and, eq }) => and(eq(m.identifier, target.id), eq(m.role, "SUPERVISOR")),
-    columns: { userId: true },
-  });
-  if (!member) throw new Error(`supervisor ${target.id} has no user`);
-  targetUserId = member.userId;
 });
 
 test.afterAll(async () => {
@@ -65,11 +66,10 @@ test.afterAll(async () => {
 test("a hub coordinator edits a supervisor in their hub", async ({ page, context }) => {
   const supervisorName = `${target.supervisorName} E2E`;
   await signInWithEmail(context, ownHubEmail);
-  await page.goto(getUrl("/hc/supervisors"), { waitUntil: "networkidle" });
+  await page.goto(getUrl("/hc/supervisors"));
 
   const row = await searchRows(page, target.supervisorName ?? "");
-  await row.getByRole("cell").last().click();
-  await page.getByRole("menuitem", { name: "Edit supervisor information" }).click();
+  await chooseRowAction(page, row, "Edit supervisor information");
   const dialog = page.getByRole("dialog", { name: "Edit supervisor information" });
   await dialog.getByRole("textbox", { name: "Full name *" }).first().fill(supervisorName);
   // The form writes this to the login email, so keep the current one.
@@ -82,8 +82,9 @@ test("a hub coordinator edits a supervisor in their hub", async ({ page, context
   await dialog.getByRole("button", { name: "Update & Save" }).click();
   await expect(dialog).toBeHidden();
 
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload();
   await expect(await searchRows(page, supervisorName)).toBeVisible();
+  // No page shows the login email the form writes.
   const login = await db.query.user.findFirst({
     where: (u, { eq }) => eq(u.id, targetUserId),
     columns: { email: true },
@@ -93,7 +94,7 @@ test("a hub coordinator edits a supervisor in their hub", async ({ page, context
 
 test("a hub coordinator in another hub does not list the supervisor", async ({ page, context }) => {
   await signInWithEmail(context, otherHubEmail);
-  await page.goto(getUrl("/hc/supervisors"), { waitUntil: "networkidle" });
+  await page.goto(getUrl("/hc/supervisors"));
 
   await expect(page.getByRole("button", { name: "Add supervisor" })).toBeVisible();
   await expect(await searchRows(page, target.supervisorName ?? "")).toHaveCount(0);

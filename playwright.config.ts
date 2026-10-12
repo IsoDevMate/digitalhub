@@ -11,29 +11,37 @@ const useHeadless = process.env.CI ? { headless: true } : devices["Desktop Chrom
 export default defineConfig({
   testDir: "./tests/e2e",
   webServer: {
-    // E2E_PROD=1 serves a prior `npm run build`, to catch bugs that only a production build shows.
+    // CI and `npm run test:prod` set E2E_PROD=1 to serve a production build; `npm test` uses `next dev`.
     command: process.env.E2E_PROD ? "npm run start" : "npm run dev",
-    timeout: 480 * 1000, // 2 minutes
+    timeout: 480 * 1000,
     port: Number(process.env.PORT ?? 3000),
     reuseExistingServer: !isCI,
     stdout: showServerLogs,
     stderr: showServerLogs,
   },
+  // `next dev` compiles each page on first use, which can take longer than the default.
+  timeout: process.env.E2E_PROD ? 30_000 : 3 * 60 * 1000,
   fullyParallel: true,
   forbidOnly: isCI,
+  // Stop at the first failure; `--max-failures=0` runs everything.
+  maxFailures: 1,
   retries: isCI ? 2 : 0,
   workers: isCI ? 1 : undefined,
-  globalSetup: "./tests/global-setup.ts",
+  // Server actions write to a real database; 5s is short when several workers share one machine.
+  expect: { timeout: 10_000 },
   use: { trace: "retain-on-failure" },
   projects: [
     {
       name: "chromium",
-      use: {
-        ...useHeadless,
-        launchOptions: {
-          slowMo,
-        },
-      },
+      testIgnore: /payout-run\.spec\.ts/,
+      use: { ...useHeadless, launchOptions: { slowMo } },
+    },
+    // A payout run executes every eligible statement in the database, so it runs after the rest.
+    {
+      name: "payout-run",
+      testMatch: /payout-run\.spec\.ts/,
+      dependencies: ["chromium"],
+      use: { ...useHeadless, launchOptions: { slowMo } },
     },
   ],
 });

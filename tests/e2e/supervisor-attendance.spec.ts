@@ -1,11 +1,10 @@
 import { expect, type Page, test } from "@playwright/test";
-import { differenceInCalendarWeeks } from "date-fns";
 import { and, eq, sql } from "drizzle-orm";
 
 import { db } from "#/db/client";
 import { supervisorAttendance } from "#/db/schema";
 import { signableMember, signInWithEmail } from "#/tests/helpers";
-import { getUrl, searchRows } from "#/tests/pages/helpers";
+import { chooseRowAction, scheduleUrl, searchRows } from "#/tests/pages/helpers";
 
 /**
  * A hub coordinator marks a supervisor's attendance from the schedule, first for one supervisor
@@ -13,8 +12,7 @@ import { getUrl, searchRows } from "#/tests/pages/helpers";
  * to pick the fixture, to read the stored rows back and to remove them afterwards.
  */
 
-// The dev server compiles each page on first use, which can take longer than the default.
-test.describe.configure({ mode: "serial", timeout: 3 * 60 * 1000 });
+test.describe.configure({ mode: "serial" });
 
 type Fixture = {
   sessionId: string;
@@ -68,25 +66,14 @@ test.afterAll(async () => {
 });
 
 async function openSupervisorAttendance(page: Page) {
-  await page.goto(getUrl("/hc/schedule?mode=list"), { waitUntil: "networkidle" });
-  const weeksBack = differenceInCalendarWeeks(new Date(), fixture.sessionDate);
-  for (let i = 0; i < weeksBack; i++) {
-    await page.getByRole("button", { name: "Previous" }).click();
-    await page.waitForLoadState("networkidle");
-  }
+  await page.goto(await scheduleUrl(page.context(), "/hc/schedule?mode=list", fixture.sessionDate));
   const sessionRow = page.getByRole("row").filter({ hasText: fixture.schoolName }).first();
   const dialog = page.getByRole("dialog", { name: "Mark supervisor attendance" });
-  // The menu can close while the calendar re-renders with data that loads after the page.
-  await expect(async () => {
-    await sessionRow.getByRole("cell").last().click();
-    await page.getByRole("menuitem", { name: "Mark supervisor attendance" }).click({
-      timeout: 2000,
-    });
-    await expect(dialog).toBeVisible({ timeout: 2000 });
-  }).toPass({ timeout: 30_000 });
+  await chooseRowAction(page, sessionRow, "Mark supervisor attendance");
   return dialog;
 }
 
+/** One row throughout: marking again, alone or in bulk, updates it rather than adding another. */
 async function storedAttendances() {
   return db
     .select({ attended: supervisorAttendance.attended })
@@ -107,14 +94,12 @@ test("a hub coordinator marks a supervisor attended, then missed in bulk", async
 
   await openSupervisorAttendance(page);
   const supervisorRow = await searchRows(page, fixture.supervisorName);
-  await supervisorRow.getByRole("cell").last().click();
-  await page.getByRole("menuitem", { name: "Mark attendance" }).click();
+  await chooseRowAction(page, supervisorRow, "Mark attendance");
   const mark = page.getByRole("dialog").filter({ hasText: "Select attendance" });
   await mark.getByRole("radio").first().click();
   await mark.getByRole("button", { name: "Submit" }).click();
   await expect(mark).toBeHidden();
 
-  await page.reload({ waitUntil: "networkidle" });
   await openSupervisorAttendance(page);
   await expect(await searchRows(page, fixture.supervisorName)).toContainText("Attended");
   expect(await storedAttendances()).toEqual([{ attended: true }]);
@@ -132,7 +117,6 @@ test("a hub coordinator marks a supervisor attended, then missed in bulk", async
   await bulkMark.getByRole("button", { name: "Submit" }).click();
   await expect(bulkMark).toBeHidden();
 
-  await page.reload({ waitUntil: "networkidle" });
   await openSupervisorAttendance(page);
   await expect(await searchRows(page, fixture.supervisorName)).toContainText("Missed");
   expect(await storedAttendances()).toEqual([{ attended: false }]);

@@ -1,4 +1,4 @@
-import { type BrowserContext, expect, type Locator, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "#/db/client";
@@ -12,19 +12,18 @@ import {
   triageEventAudit,
 } from "#/db/schema";
 import { signableMember, signInWithEmail } from "#/tests/helpers";
-import { getUrl } from "#/tests/pages/helpers";
+import { chooseRowAction, getUrl, rowWithCell } from "#/tests/pages/helpers";
 import { sessionDisplayName } from "#/lib/utils";
 
 /**
  * Hub coordinators and fellows change their own hub's records through the UI: drop out a student,
  * mark a session as occurred, mark student attendance, document and edit a triage event. Each test
  * saves, reloads and checks what the page shows, and a coordinator in another hub does not see the
- * school at all. The database is read only to pick fixtures, to read a saved value back and to put
- * rows back.
+ * school at all. The database picks fixtures, puts rows back, and checks what no page shows: absence
+ * reasons and the hub a triage event is stored under.
  */
 
-// The dev server compiles each page on first use, which can take longer than the default.
-test.describe.configure({ mode: "serial", timeout: 3 * 60 * 1000 });
+test.describe.configure({ mode: "serial" });
 
 type Coordinator = { email: string; hubId: string; implementerId: string };
 type SchoolFixture = {
@@ -98,13 +97,6 @@ test.beforeAll(async () => {
         "and another coordinator in the same organisation",
     );
   }
-  // The seed marks every past session as occurred, so make the chosen one "not yet occurred" for
-  // the mark-occurred test. afterAll puts the original value back.
-  await db
-    .update(interventionSession)
-    .set({ occurred: false })
-    .where(eq(interventionSession.id, school.sessionId));
-
   const {
     rows: [fellowRow],
   } = await db.execute<TriageFixture>(sql`
@@ -144,15 +136,6 @@ test.beforeAll(async () => {
   };
 });
 
-test.afterAll(async () => {
-  if (school) {
-    await db
-      .update(interventionSession)
-      .set({ occurred: school.sessionOccurred })
-      .where(eq(interventionSession.id, school.sessionId));
-  }
-});
-
 // Each test's undo steps run in afterEach, not in a finally block: when a test times out,
 // Playwright abandons its body but still runs the hooks.
 let undo: (() => Promise<unknown>)[] = [];
@@ -162,19 +145,6 @@ test.afterEach(async () => {
   }
   undo = [];
 });
-
-async function signIn(context: BrowserContext, email: string) {
-  await context.clearCookies();
-  await signInWithEmail(context, email);
-}
-
-/** A row by the exact text of one of its cells, after searching the table for it. */
-async function rowWithCell(page: Page, scope: Locator, text: string) {
-  await scope.getByPlaceholder("Search...").fill(text);
-  return scope
-    .getByRole("row")
-    .filter({ has: page.getByRole("cell", { name: text, exact: true }) });
-}
 
 /**
  * A sessions-table row by its session name. That column is not searchable, so show up to 50 rows
@@ -188,21 +158,14 @@ async function sessionRow(page: Page, scope: Locator, label: string) {
     .filter({ has: page.getByRole("cell", { name: label, exact: true }) });
 }
 
-/** Opens a row's actions menu. Rows re-render while their data loads, so retry the click. */
-async function openRowMenu(page: Page, row: Locator) {
-  await expect(async () => {
-    await row.getByRole("cell").last().click();
-    await expect(page.getByRole("menu")).toBeVisible({ timeout: 2000 });
-  }).toPass({ timeout: 30_000 });
-}
-
 /** The triage fellow's "Mark student attendance" dialog for the fixture session. */
 async function openStudentAttendance(page: Page) {
-  await page.goto(getUrl(`/fel/schools/${triage.visibleId}/sessions`), {
-    waitUntil: "networkidle",
-  });
-  await openRowMenu(page, await sessionRow(page, page.getByRole("main"), triage.sessionLabel));
-  await page.getByRole("menuitem", { name: "Mark student attendance" }).click();
+  await page.goto(getUrl(`/fel/schools/${triage.visibleId}/sessions`));
+  await chooseRowAction(
+    page,
+    await sessionRow(page, page.getByRole("main"), triage.sessionLabel),
+    "Mark student attendance",
+  );
   const attendance = page.getByRole("dialog", { name: "Mark student attendance" });
   // The student list loads after the dialog opens; search only once it has rows.
   await expect(attendance.getByRole("checkbox", { name: "Select row" }).first()).toBeVisible();
@@ -210,9 +173,9 @@ async function openStudentAttendance(page: Page) {
 }
 
 test("a hub coordinator drops out a student in their hub", async ({ page, context }) => {
-  await signIn(context, coordinator.email);
+  await signInWithEmail(context, coordinator.email);
   const studentsPage = getUrl(`/hc/schools/${school.visibleId}/students`);
-  await page.goto(studentsPage, { waitUntil: "networkidle" });
+  await page.goto(studentsPage);
   undo.push(() =>
     db
       .update(student)
@@ -221,8 +184,11 @@ test("a hub coordinator drops out a student in their hub", async ({ page, contex
   );
 
   const main = page.getByRole("main");
-  await openRowMenu(page, await rowWithCell(page, main, school.studentName));
-  await page.getByRole("menuitem", { name: "Drop-out student" }).click();
+  await chooseRowAction(
+    page,
+    await rowWithCell(page, main, school.studentName),
+    "Drop-out student",
+  );
   const dialog = page.getByRole("dialog", { name: "Drop out student" });
   await dialog.getByRole("combobox", { name: "Select reason *" }).click();
   await page.getByRole("option").first().click();
@@ -232,19 +198,31 @@ test("a hub coordinator drops out a student in their hub", async ({ page, contex
   await confirm.getByRole("button", { name: "Confirm" }).click();
   await expect(confirm).toBeHidden();
 
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload();
   await expect(await rowWithCell(page, main, school.studentName)).toContainText("Inactive");
 });
 
 test("a hub coordinator marks a session in their hub as occurred", async ({ page, context }) => {
-  await signIn(context, coordinator.email);
-  await page.goto(getUrl(`/hc/schools/${school.visibleId}/sessions`), {
-    waitUntil: "networkidle",
-  });
+  // The seed marks every past session as occurred, so make this one "not yet occurred" first.
+  await db
+    .update(interventionSession)
+    .set({ occurred: false })
+    .where(eq(interventionSession.id, school.sessionId));
+  undo.push(() =>
+    db
+      .update(interventionSession)
+      .set({ occurred: school.sessionOccurred })
+      .where(eq(interventionSession.id, school.sessionId)),
+  );
+  await signInWithEmail(context, coordinator.email);
+  await page.goto(getUrl(`/hc/schools/${school.visibleId}/sessions`));
 
   const main = page.getByRole("main");
-  await openRowMenu(page, await sessionRow(page, main, school.sessionLabel));
-  await page.getByRole("menuitem", { name: "Mark session occurrence" }).click();
+  await chooseRowAction(
+    page,
+    await sessionRow(page, main, school.sessionLabel),
+    "Mark session occurrence",
+  );
   const dialog = page
     .getByRole("dialog")
     .filter({ has: page.getByRole("heading", { name: "Mark session occurrence" }) });
@@ -256,18 +234,13 @@ test("a hub coordinator marks a session in their hub as occurred", async ({ page
   await confirm.getByRole("button", { name: "Confirm" }).click();
   await expect(confirm).toBeHidden();
 
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload();
   await expect(await sessionRow(page, main, school.sessionLabel)).toContainText("Attended");
-  const [markedSession] = await db
-    .select({ occurred: interventionSession.occurred })
-    .from(interventionSession)
-    .where(eq(interventionSession.id, school.sessionId));
-  expect(markedSession?.occurred).toBe(true);
 });
 
 test("a hub coordinator in another hub does not see the school", async ({ page, context }) => {
-  await signIn(context, otherCoordinator.email);
-  await page.goto(getUrl("/hc/schools"), { waitUntil: "networkidle" });
+  await signInWithEmail(context, otherCoordinator.email);
+  await page.goto(getUrl("/hc/schools"));
 
   const main = page.getByRole("main");
   await expect(await rowWithCell(page, main, school.schoolName)).toHaveCount(0);
@@ -308,11 +281,14 @@ test("a fellow marks one student missed and two students attended at once", asyn
       await db.insert(studentAttendance).values(originalAttendances);
     }
   });
-  await signIn(context, triage.email);
+  await signInWithEmail(context, triage.email);
 
   let attendance = await openStudentAttendance(page);
-  await openRowMenu(page, await rowWithCell(page, attendance, missedStudent.admissionNumber ?? ""));
-  await page.getByRole("menuitem", { name: "Mark attendance" }).click();
+  await chooseRowAction(
+    page,
+    await rowWithCell(page, attendance, missedStudent.admissionNumber ?? ""),
+    "Mark attendance",
+  );
   // The mark dialog's heading is not linked to it, so it has no accessible name.
   const mark = page.getByRole("dialog").filter({ hasText: "Select attendance" });
   // The radios are unlabelled: Attended, Missed, Unmarked.
@@ -344,6 +320,7 @@ test("a fellow marks one student missed and two students attended at once", asyn
     );
   }
 
+  // No page shows the absence reason; one row per student also rules out duplicate writes.
   const markedStudentAttendances = await db
     .select({
       studentId: studentAttendance.studentId,
@@ -365,20 +342,21 @@ test("a fellow documents a triage event; another fellow at the school does not s
   page,
   context,
 }) => {
+  // Two fellows, five dialogs and a reload of the attendance list after each save.
+  test.slow();
   const note = `e2e-2212-${Date.now()}`;
-  await signIn(context, triage.email);
+  await signInWithEmail(context, triage.email);
   const openAttendance = () => openStudentAttendance(page);
 
-  async function openStudentMenu(admissionNumber = triage.admissionNumber) {
+  async function chooseStudentAction(action: string, admissionNumber = triage.admissionNumber) {
     const attendance = await openAttendance();
     // The name column is not searchable; the admission number column is.
-    await openRowMenu(page, await rowWithCell(page, attendance, admissionNumber));
+    await chooseRowAction(page, await rowWithCell(page, attendance, admissionNumber), action);
   }
 
   const form = page.getByRole("dialog", { name: "Document triage" });
   async function documentTriage(admissionNumber: string) {
-    await openStudentMenu(admissionNumber);
-    await page.getByRole("menuitem", { name: "Triage occurred" }).click();
+    await chooseStudentAction("Triage occurred", admissionNumber);
     await form.getByRole("combobox", { name: "Risk screen outcome (required)" }).click();
     await page.getByRole("option", { name: "All NO (Risk negative)" }).click();
     await form.getByRole("combobox", { name: "Action taken (required)" }).click();
@@ -405,8 +383,7 @@ test("a fellow documents a triage event; another fellow at the school does not s
 
   await documentTriage(triage.admissionNumber);
 
-  await openStudentMenu();
-  await page.getByRole("menuitem", { name: "Edit triage" }).click();
+  await chooseStudentAction("Edit triage");
   await form.getByRole("combobox", { name: "Risk screen outcome (required)" }).click();
   await page.getByRole("option", { name: "All NO (Risk negative)" }).click();
   await form.getByRole("combobox", { name: "Action taken (required)" }).click();
@@ -415,14 +392,13 @@ test("a fellow documents a triage event; another fellow at the school does not s
   await form.getByRole("button", { name: "Save triage" }).click();
   await expect(form).toBeHidden();
 
-  await openStudentMenu();
-  await page.getByRole("menuitem", { name: "View triage" }).click();
+  await chooseStudentAction("View triage");
   const view = page.getByRole("dialog", { name: "View triage" });
   await expect(view.getByRole("textbox", { name: /Short note/ })).toHaveValue(note);
 
   // Another fellow at the school documents triage for a student of their own group. Their
   // session summary counts only that event, not the first fellow's ("2 students triaged").
-  await signIn(context, triage.otherFellowEmail);
+  await signInWithEmail(context, triage.otherFellowEmail);
   await documentTriage(triage.otherAdmissionNumber);
   const otherAttendance = await openAttendance();
   await expect(otherAttendance.getByText("1 student triaged", { exact: true })).toBeVisible();
@@ -514,22 +490,23 @@ test("a borrowed fellow's triage event and supervisor list use the session's hub
     .where(eq(supervisor.hubId, borrowed.schoolHubId))
     .orderBy(asc(supervisor.supervisorName));
 
-  await signIn(context, borrowed.email);
-  await page.goto(getUrl(`/fel/schools/${borrowed.visibleId}/sessions`), {
-    waitUntil: "networkidle",
-  });
+  await signInWithEmail(context, borrowed.email);
+  await page.goto(getUrl(`/fel/schools/${borrowed.visibleId}/sessions`));
   const sessionLabel = sessionDisplayName(borrowed.sessionLabel) ?? borrowed.sessionLabel;
-  await openRowMenu(page, await sessionRow(page, page.getByRole("main"), sessionLabel));
-  await page.getByRole("menuitem", { name: "Mark student attendance" }).click();
+  await chooseRowAction(
+    page,
+    await sessionRow(page, page.getByRole("main"), sessionLabel),
+    "Mark student attendance",
+  );
   const attendance = page.getByRole("dialog", { name: "Mark student attendance" });
   await expect(attendance.getByRole("checkbox", { name: "Select row" }).first()).toBeVisible();
   const form = page.getByRole("dialog", { name: "Document triage" });
-  // The table re-renders while the dev server compiles, which can close the menu: retry both.
-  await expect(async () => {
-    await openRowMenu(page, await rowWithCell(page, attendance, borrowed.admissionNumber));
-    await page.getByRole("menuitem", { name: "Triage occurred" }).click({ timeout: 5000 });
-    await expect(form).toBeVisible({ timeout: 2000 });
-  }).toPass({ timeout: 60_000 });
+  await chooseRowAction(
+    page,
+    await rowWithCell(page, attendance, borrowed.admissionNumber),
+    "Triage occurred",
+  );
+  await expect(form).toBeVisible();
   await form.getByRole("combobox", { name: "Risk screen outcome (required)" }).click();
   await page.getByRole("option", { name: "All NO (Risk negative)" }).click();
   await form.getByRole("combobox", { name: "Action taken (required)" }).click();
@@ -543,6 +520,7 @@ test("a borrowed fellow's triage event and supervisor list use the session's hub
   await form.getByRole("button", { name: "Save triage" }).click();
   await expect(form).toBeHidden();
 
+  // No page shows the hub a triage event is stored under.
   const [stored] = await db
     .select({ hubId: triageEvent.hubId })
     .from(triageEvent)

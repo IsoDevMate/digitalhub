@@ -11,13 +11,13 @@ import {
   student,
 } from "#/db/schema";
 import { objectId } from "#/lib/crypto";
-import { emailForProfile, signInWithEmail } from "#/tests/helpers";
-import { getUrl, searchRows } from "#/tests/pages/helpers";
+import { createClinicalCase, emailForProfile, signInWithEmail } from "#/tests/helpers";
+import { getUrl, chooseRowAction, searchRows } from "#/tests/pages/helpers";
 
 /**
- * A supervisor works on the clinical cases they hold, through the UI. Each test saves, reloads and
- * checks what the page shows; the database is used only to find or add fixtures, to read a saved
- * value back and to clean up.
+ * A supervisor works on a clinical case they hold, through the UI. Each test saves, reloads and
+ * checks what the page shows. The database finds or adds fixtures, cleans up, and checks what no
+ * page shows: the owner fields set from the session and the stored termination reason.
  */
 
 type Fixture = { profileId: string; hubId: string; email: string };
@@ -28,44 +28,40 @@ let clinicalLead: Fixture;
 let caseId: string;
 let pseudonym: string;
 
-// The dev server compiles each page on first use, which can take longer than the default.
-test.describe.configure({ mode: "serial", timeout: 3 * 60 * 1000 });
+test.describe.configure({ mode: "serial" });
+
+let removeCase: () => Promise<void>;
 
 test.beforeAll(async () => {
   const supervisors = await db.query.supervisor.findMany({
+    where: (s, { isNotNull }) => isNotNull(s.hubId),
     columns: { id: true, hubId: true },
-    with: {
-      clinicalScreeningCases: {
-        where: (c, { eq }) => eq(c.caseStatus, "Active"),
-        columns: { id: true, pseudonym: true },
-        orderBy: (c, { asc }) => asc(c.id),
-      },
-    },
     orderBy: (s, { asc }) => asc(s.id),
   });
-
-  const signable: (Fixture & { cases: { id: string; pseudonym: string | null }[] })[] = [];
+  const signable: Fixture[] = [];
   for (const s of supervisors) {
-    const email = s.hubId ? await emailForProfile(s.id, "SUPERVISOR") : null;
-    if (email && s.hubId) {
-      signable.push({
-        profileId: s.id,
-        hubId: s.hubId,
-        email,
-        cases: s.clinicalScreeningCases,
-      });
-    }
+    const email = await emailForProfile(s.id, "SUPERVISOR");
+    if (email && s.hubId) signable.push({ profileId: s.id, hubId: s.hubId, email });
   }
-  const withCase = signable.find((s) => s.cases.some((c) => c.pseudonym));
-  const ownCase = withCase?.cases.find((c) => c.pseudonym);
-  const other = signable.find((s) => withCase && s.hubId !== withCase.hubId);
-  if (!withCase || !ownCase?.pseudonym || !other) {
-    throw new Error("seed the database first: no supervisor with an active case and an outsider");
-  }
-  owner = withCase;
+  const [first] = signable;
+  const other = signable.find((s) => first && s.hubId !== first.hubId);
+  if (!first || !other) throw new Error("seed the database first: no supervisors in two hubs");
+  owner = first;
   outsider = other;
-  caseId = ownCase.id;
+
+  const ownerSchool = await db.query.school.findFirst({
+    where: (s, { eq }) => eq(s.hubId, owner.hubId),
+    columns: { id: true },
+    orderBy: (s, { asc }) => asc(s.id),
+  });
+  if (!ownerSchool) throw new Error("seed the database first: the supervisor's hub has no school");
+  const ownCase = await createClinicalCase({
+    schoolId: ownerSchool.id,
+    currentSupervisorId: owner.profileId,
+  });
+  caseId = ownCase.caseId;
   pseudonym = ownCase.pseudonym;
+  removeCase = ownCase.remove;
 
   const leads = await db.query.clinicalLead.findMany({
     where: (cl, { isNotNull }) => isNotNull(cl.assignedHubId),
@@ -83,8 +79,7 @@ test.beforeAll(async () => {
 });
 
 async function openCaseAction(page: Page, name: string, action: string) {
-  await (await searchRows(page, name)).getByRole("cell").last().click();
-  await page.getByRole("menu").getByText(action, { exact: true }).click();
+  await chooseRowAction(page, await searchRows(page, name), action);
 }
 
 /** Fills the "Add clinical case" dialog for a new student at the first school offered. */
@@ -120,11 +115,22 @@ async function createCaseForNewStudent(page: Page, casePseudonym: string) {
   await expect(dialog).toBeHidden();
 }
 
+function caseOwners(casePseudonym: string) {
+  return db.query.clinicalScreeningInfo.findFirst({
+    where: (c, { eq }) => eq(c.pseudonym, casePseudonym),
+    columns: { currentSupervisorId: true, clinicalLeadId: true },
+  });
+}
+
 /** Deletes a case made by createCaseForNewStudent and its student, even if only one of them exists. */
 async function deleteCase(casePseudonym: string) {
   await db.delete(clinicalScreeningInfo).where(eq(clinicalScreeningInfo.pseudonym, casePseudonym));
   await db.delete(student).where(eq(student.studentName, `${casePseudonym} student`));
 }
+
+test.afterAll(async () => {
+  await removeCase?.();
+});
 
 // Cleanup runs in afterEach, not in a finally block: when a test times out, Playwright abandons
 // its body but still runs the hooks.
@@ -139,38 +145,37 @@ test.afterEach(async () => {
 test("a supervisor's new case is listed as theirs", async ({ page, context }) => {
   const casePseudonym = `e2e-sc-${Date.now()}`;
   await signInWithEmail(context, owner.email);
-  await page.goto(getUrl("/sc/clinical"), { waitUntil: "networkidle" });
+  await page.goto(getUrl("/sc/clinical"));
   undo.push(() => deleteCase(casePseudonym));
 
   await createCaseForNewStudent(page, casePseudonym);
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload();
+  // The list holds only the cases whose current supervisor is the caller.
   await expect(await searchRows(page, casePseudonym)).toContainText("ACTIVE", {
     ignoreCase: true,
   });
-
-  // The creator comes from the session: the case belongs to this supervisor and no lead.
-  const created = await db.query.clinicalScreeningInfo.findFirst({
-    where: (c, { eq }) => eq(c.pseudonym, casePseudonym),
-    columns: { currentSupervisorId: true, clinicalLeadId: true },
+  // No page shows the lead of a supervisor's case; it must come from the session, not the form.
+  expect(await caseOwners(casePseudonym)).toEqual({
+    currentSupervisorId: owner.profileId,
+    clinicalLeadId: null,
   });
-  expect(created).toEqual({ currentSupervisorId: owner.profileId, clinicalLeadId: null });
 });
 
 test("a clinical lead's new case is assigned to them", async ({ page, context }) => {
   const casePseudonym = `e2e-cl-${Date.now()}`;
   await signInWithEmail(context, clinicalLead.email);
-  await page.goto(getUrl("/cl/clinical"), { waitUntil: "networkidle" });
+  await page.goto(getUrl("/cl/clinical"));
   undo.push(() => deleteCase(casePseudonym));
 
   await createCaseForNewStudent(page, casePseudonym);
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload();
+  // The list holds only the cases assigned to the calling lead.
   await expect(await searchRows(page, casePseudonym)).toBeVisible();
-
-  const created = await db.query.clinicalScreeningInfo.findFirst({
-    where: (c, { eq }) => eq(c.pseudonym, casePseudonym),
-    columns: { currentSupervisorId: true, clinicalLeadId: true },
+  // No page shows the supervisor of a lead's case; it must come from the session, not the form.
+  expect(await caseOwners(casePseudonym)).toEqual({
+    currentSupervisorId: null,
+    clinicalLeadId: clinicalLead.profileId,
   });
-  expect(created).toEqual({ currentSupervisorId: null, clinicalLeadId: clinicalLead.profileId });
 });
 
 // The form once copied an existing student's admission number into a hidden numeric field. A
@@ -206,7 +211,7 @@ test("a supervisor opens a case for an existing student with a non-numeric admis
   undo.push(() => deleteCase(casePseudonym));
 
   await signInWithEmail(context, owner.email);
-  await page.goto(getUrl("/sc/clinical"), { waitUntil: "networkidle" });
+  await page.goto(getUrl("/sc/clinical"));
   await page.getByRole("button", { name: "New case" }).click();
   const dialog = page.getByRole("dialog", { name: "Add clinical case" });
   await dialog.getByRole("button", { name: "Select a school..." }).click();
@@ -223,7 +228,7 @@ test("a supervisor opens a case for an existing student with a non-numeric admis
   await dialog.getByRole("button", { name: "Save" }).click();
   await expect(dialog).toBeHidden();
 
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload();
   await expect(await searchRows(page, casePseudonym)).toContainText("ACTIVE", {
     ignoreCase: true,
   });
@@ -241,7 +246,7 @@ test("a supervisor edits their case's student and the change survives a reload",
   const original = ownCase.student;
   const studentName = `E2E student ${Date.now()}`;
   await signInWithEmail(context, owner.email);
-  await page.goto(getUrl("/sc/clinical"), { waitUntil: "networkidle" });
+  await page.goto(getUrl("/sc/clinical"));
   undo.push(() =>
     db
       .update(student)
@@ -260,14 +265,14 @@ test("a supervisor edits their case's student and the change survives a reload",
   await dialog.getByRole("button", { name: "Save Changes" }).click();
   await expect(dialog).toBeHidden();
 
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload();
   await openCaseAction(page, pseudonym, "Edit student information");
   await expect(dialog.getByRole("textbox", { name: "Student Name" })).toHaveValue(studentName);
 });
 
 test("a supervisor moves their case to follow-up", async ({ page, context }) => {
   await signInWithEmail(context, owner.email);
-  await page.goto(getUrl("/sc/clinical"), { waitUntil: "networkidle" });
+  await page.goto(getUrl("/sc/clinical"));
   undo.push(() =>
     db
       .update(clinicalScreeningInfo)
@@ -280,13 +285,13 @@ test("a supervisor moves their case to follow-up", async ({ page, context }) => 
   await dialog.getByRole("button", { name: "Confirm" }).click();
   await expect(dialog).toBeHidden();
 
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload();
   await expect(await searchRows(page, pseudonym)).toContainText("FollowUp");
 });
 
 test("a supervisor in another hub does not see the case", async ({ page, context }) => {
   await signInWithEmail(context, outsider.email);
-  await page.goto(getUrl("/sc/clinical"), { waitUntil: "networkidle" });
+  await page.goto(getUrl("/sc/clinical"));
 
   await expect(page.getByRole("button", { name: "New case" })).toBeVisible();
   await expect(await searchRows(page, pseudonym)).toHaveCount(0);
@@ -326,7 +331,7 @@ test("a supervisor writes case notes and reads them back after a reload", async 
     db.delete(clinicalCaseNotes).where(eq(clinicalCaseNotes.sessionId, clinicalSessionId)),
   );
   await signInWithEmail(context, owner.email);
-  await page.goto(getUrl("/sc/clinical"), { waitUntil: "networkidle" });
+  await page.goto(getUrl("/sc/clinical"));
 
   // The dialog's heading is not linked to it, so it has no accessible name.
   const dialog = page
@@ -352,40 +357,22 @@ test("a supervisor writes case notes and reads them back after a reload", async 
   await expect(dialog).toBeHidden();
 
   // A saved session's notes open read-only with the stored text.
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload();
   await openNotesForSession();
   await expect(dialog.getByRole("textbox", { name: /Situation/ })).toHaveValue(presentingIssues);
   await expect(dialog.getByRole("button", { name: "Submit" })).toBeHidden();
-
-  const savedNotes = await db.query.clinicalCaseNotes.findMany({
-    where: (n, { eq }) => eq(n.sessionId, clinicalSessionId),
-    columns: {
-      caseId: true,
-      presentingIssues: true,
-      orsAssessment: true,
-      riskLevel: true,
-      necessaryConditions: true,
-      treatmentInterventions: true,
-      interventionExplanation: true,
-      studentResponseExplanations: true,
-      followUpPlan: true,
-      followUpPlanExplanation: true,
-    },
-  });
-  expect(savedNotes).toEqual([
-    {
-      caseId,
-      presentingIssues,
-      orsAssessment: 27,
-      riskLevel: "medium",
-      necessaryConditions: "Quiet room",
-      treatmentInterventions: ["Interpersonal Therapy"],
-      interventionExplanation: "Role play",
-      studentResponseExplanations: "Calmer",
-      followUpPlan: "GROUP",
-      followUpPlanExplanation: "Join the next group",
-    },
-  ]);
+  await expect(dialog.getByRole("spinbutton", { name: "ORS Assessment" })).toHaveValue("27");
+  await expect(dialog.getByRole("checkbox", { name: /^medium$/i })).toBeChecked();
+  await expect(dialog.getByRole("textbox", { name: "Necessary Conditions" })).toHaveValue(
+    "Quiet room",
+  );
+  await expect(dialog.getByRole("checkbox", { name: "Interpersonal Therapy" })).toBeChecked();
+  await expect(dialog.getByRole("textbox", { name: /^Intervention:/ })).toHaveValue("Role play");
+  await expect(dialog.getByRole("textbox", { name: /Student Behavioural/ })).toHaveValue("Calmer");
+  await expect(dialog.getByRole("checkbox", { name: "Group Session" })).toBeChecked();
+  await expect(dialog.getByRole("textbox", { name: /^Explanation/ })).toHaveValue(
+    "Join the next group",
+  );
 });
 
 test("a supervisor terminates their case", async ({ page, context }) => {
@@ -404,7 +391,7 @@ test("a supervisor terminates their case", async ({ page, context }) => {
         .where(eq(clinicalScreeningInfo.id, caseId)),
   );
   await signInWithEmail(context, owner.email);
-  await page.goto(getUrl("/sc/clinical"), { waitUntil: "networkidle" });
+  await page.goto(getUrl("/sc/clinical"));
 
   await openCaseAction(page, pseudonym, "Terminate case");
   const dialog = page
@@ -420,26 +407,17 @@ test("a supervisor terminates their case", async ({ page, context }) => {
   await dialog.getByRole("button", { name: "Terminate Case" }).click();
   await expect(dialog).toBeHidden();
 
-  await page.reload({ waitUntil: "networkidle" });
+  await page.reload();
   await expect(await searchRows(page, pseudonym)).toContainText("Terminated");
 
-  const terminatedCase = await db.query.clinicalScreeningInfo.findFirst({
-    where: (c, { eq }) => eq(c.id, caseId),
-    columns: { caseStatus: true },
-    with: {
-      clinicalCaseTermination: {
-        columns: { sessionId: true, terminationReason: true, terminationReasonExplanation: true },
-      },
-    },
+  // No page shows the termination reason, so read the stored one.
+  const termination = await db.query.clinicalCaseTermination.findFirst({
+    where: (t, { eq }) => eq(t.sessionId, clinicalSessionId),
+    columns: { caseId: true, terminationReason: true, terminationReasonExplanation: true },
   });
-  expect(terminatedCase).toEqual({
-    caseStatus: "Terminated",
-    clinicalCaseTermination: [
-      {
-        sessionId: clinicalSessionId,
-        terminationReason: "Student refused to return to sessions",
-        terminationReasonExplanation,
-      },
-    ],
+  expect(termination).toEqual({
+    caseId,
+    terminationReason: "Student refused to return to sessions",
+    terminationReasonExplanation,
   });
 });

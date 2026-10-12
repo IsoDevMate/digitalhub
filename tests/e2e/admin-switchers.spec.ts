@@ -1,7 +1,8 @@
 import { expect, type Page, test } from "@playwright/test";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 import { db } from "#/db/client";
+import { adminUser, implementerMember, session, user } from "#/db/schema";
 import { signInWithEmail } from "#/tests/helpers";
 import { getUrl } from "#/tests/pages/helpers";
 
@@ -10,14 +11,14 @@ import { getUrl } from "#/tests/pages/helpers";
  * layout, so after a switch the header must show the new project and implementer.
  */
 
-test.describe.configure({ mode: "serial", timeout: 3 * 60 * 1000 });
+test.describe.configure({ mode: "serial" });
 
 type Admin = { userId: string; email: string; activeProjectId: string; activeProjectName: string };
 type Project = { id: string; name: string; implementerName: string | null };
 
 async function loadFixture() {
   const {
-    rows: [admin],
+    rows: [seededAdmin],
   } = await db.execute<Admin>(sql`
     select u.id as "userId", u.email, p.id as "activeProjectId", p.name as "activeProjectName"
     from users u
@@ -29,7 +30,8 @@ async function loadFixture() {
     having count(distinct m.id) > 1 and count(distinct h.project_id) > 1
     order by u.email
     limit 1`);
-  if (!admin) throw new Error("No admin with memberships in two projects");
+  if (!seededAdmin) throw new Error("No admin with memberships in two projects");
+  const admin = await copyAdmin(seededAdmin);
   const { rows: otherProjects } = await db.execute<Project>(sql`
     select p.id, p.name, (
       select i.implementer_name from implementer_members m
@@ -55,26 +57,44 @@ async function switchProject(page: Page, from: string, to: string) {
   await expect(header(page, "button", to)).toBeVisible();
 }
 
-let restore: (() => Promise<unknown>)[] = [];
+let copies: { userId: string; email: string }[] = [];
 test.afterEach(async () => {
-  for (const step of restore.reverse()) await step();
-  restore = [];
+  for (const { userId, email } of copies) {
+    await db.delete(implementerMember).where(eq(implementerMember.userId, userId));
+    await db.delete(session).where(eq(session.userId, userId));
+    await db.delete(adminUser).where(eq(adminUser.email, email));
+    await db.delete(user).where(eq(user.id, userId));
+  }
+  copies = [];
 });
 
-async function rememberAdminState(admin: Admin) {
-  const { rows: memberships } = await db.execute<{ id: number; updatedAt: string | null }>(
-    sql`select id, updated_at::text as "updatedAt" from implementer_members where user_id = ${admin.userId}`,
-  );
-  restore.push(async () => {
-    await db.execute(
-      sql`update users set active_project_id = ${admin.activeProjectId} where id = ${admin.userId}`,
-    );
-    for (const m of memberships) {
-      await db.execute(
-        sql`update implementer_members set updated_at = ${m.updatedAt}::timestamp where id = ${m.id}`,
-      );
-    }
+/**
+ * A new user with an admin profile in each of the seeded admin's implementers, so switching its
+ * project or implementer changes no user another spec signs in as.
+ */
+async function copyAdmin(seededAdmin: Admin): Promise<Admin> {
+  const email = `e2e-switcher-${Date.now()}@example.com`;
+  const [copy] = await db
+    .insert(user)
+    .values({ email, name: "E2E Switcher", activeProjectId: seededAdmin.activeProjectId })
+    .returning({ id: user.id });
+  if (!copy) throw new Error("Could not create the admin copy");
+  copies.push({ userId: copy.id, email });
+  const memberships = await db.query.implementerMember.findMany({
+    where: (m, { and, eq }) => and(eq(m.userId, seededAdmin.userId), eq(m.role, "ADMIN")),
+    columns: { implementerId: true },
   });
+  for (const { implementerId } of memberships) {
+    const [profile] = await db
+      .insert(adminUser)
+      .values({ email, adminName: "E2E Switcher", implementerId })
+      .returning({ id: adminUser.id });
+    if (!profile) throw new Error("Could not create an admin profile");
+    await db
+      .insert(implementerMember)
+      .values({ implementerId, userId: copy.id, role: "ADMIN", identifier: profile.id });
+  }
+  return { ...seededAdmin, userId: copy.id, email };
 }
 
 test("switching project shows the new project and its implementer in the header", async ({
@@ -84,7 +104,6 @@ test("switching project shows the new project and its implementer in the header"
   const { admin, otherProjects } = await loadFixture();
   const target = otherProjects.find((p) => p.implementerName);
   if (!target?.implementerName) throw new Error("No other project with one of the admin's hubs");
-  await rememberAdminState(admin);
   await signInWithEmail(context, admin.email);
 
   await page.goto(getUrl("/admin/hubs"));
@@ -106,22 +125,25 @@ test("switching implementer shows the new implementer in the header", async ({ p
     join implementers i on i.id = m.implementer_id
     where m.user_id = ${admin.userId} and m.role = 'ADMIN'
     order by i.implementer_name`);
-  await rememberAdminState(admin);
   await signInWithEmail(context, admin.email);
 
   await page.goto(getUrl("/admin/hubs"));
   await switchProject(page, admin.activeProjectName, target.name);
 
-  let from: string | undefined;
-  for (const { name } of implementers) {
-    if (await header(page, "button", name).isVisible()) from = name;
-  }
+  // The header shows one of the admin's implementers once it renders; wait for it, then read it.
+  const escaped = implementers.map(({ name }) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const current = page
+    .getByRole("button")
+    .filter({ hasText: new RegExp(`^(${escaped.join("|")})$`), visible: true })
+    .first();
+  await expect(current).toBeVisible();
+  const from = (await current.innerText()).trim();
   const to = implementers.find((i) => i.name !== from)?.name;
   if (!from || !to) throw new Error("The admin needs two implementers");
 
   await header(page, "button", from).click();
   await header(page, "option", to).click();
-  await expect(header(page, "button", to)).toBeVisible({ timeout: 30_000 });
+  await expect(header(page, "button", to)).toBeVisible();
   await page.reload();
   await expect(header(page, "button", to)).toBeVisible();
 });
