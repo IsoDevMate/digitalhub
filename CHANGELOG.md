@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [1.41.3](https://github.com/Shamiri-Institute/digitalhub/compare/v1.41.2...v1.41.3) (2026-10-13)
+
+### Bug Fixes
+
+- **assign fellow supervisor:** run the write in the select handler, not an effect ([#946](https://github.com/Shamiri-Institute/digitalhub/issues/946)) ([a5b5943](https://github.com/Shamiri-Institute/digitalhub/commit/a5b5943d02039a1198e799144929e5558e64270e))
+- **auth:** scope student attendance, student details and supervisor attendance writes to the caller's hub ([#947](https://github.com/Shamiri-Institute/digitalhub/issues/947)) ([11e3da0](https://github.com/Shamiri-Institute/digitalhub/commit/11e3da0537cb2f5a084ee6cfbbc45058303534bd))
+
 ## [1.41.2](https://github.com/Shamiri-Institute/digitalhub/compare/v1.41.1...v1.41.2) (2026-10-13)
 
 ### Bug Fixes
