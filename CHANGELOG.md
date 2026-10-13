@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [1.41.2](https://github.com/Shamiri-Institute/digitalhub/compare/v1.41.1...v1.41.2) (2026-10-13)
+
+### Bug Fixes
+
+- **admin:** scope admin pages and project switching to the implementer and active project ([#943](https://github.com/Shamiri-Institute/digitalhub/issues/943)) ([86de8f1](https://github.com/Shamiri-Institute/digitalhub/commit/86de8f1a0d61a57839427088d755b5173df8f343))
+- **auth:** keep fellows strictly at hub level, remove fellow borrowing across hubs ([#941](https://github.com/Shamiri-Institute/digitalhub/issues/941)) ([004ac84](https://github.com/Shamiri-Institute/digitalhub/commit/004ac84dd668eebe69066a1cccf425de259eb2b9))
+- **auth:** parse ticket input, check ticket party on status reads, narrow clinical form data ([#945](https://github.com/Shamiri-Institute/digitalhub/issues/945)) ([f4ca9df](https://github.com/Shamiri-Institute/digitalhub/commit/f4ca9dffc4336a6dd24d58742853da49ea472536))
+- **ops:** scope ops expenses and payouts to the implementer's hubs in the saved project ([#944](https://github.com/Shamiri-Institute/digitalhub/issues/944)) ([7b9fc21](https://github.com/Shamiri-Institute/digitalhub/commit/7b9fc21df664aaae4a960ea6bee9ce5e3f5313cd))
+
 ## [1.41.1](https://github.com/Shamiri-Institute/digitalhub/compare/v1.41.0...v1.41.1) (2026-10-12)
 
 ### Bug Fixes
