@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [2.0.0](https://github.com/Shamiri-Institute/digitalhub/compare/v1.41.3...v2.0.0) (2026-10-13)
+
+### ⚠ BREAKING CHANGES
+
+- **db:** repair implementer_members.identifier after the typeid id rewrite (#948)
+
+### Bug Fixes
+
+- **db:** repair implementer_members.identifier after the typeid id rewrite ([#948](https://github.com/Shamiri-Institute/digitalhub/issues/948)) ([89e10ff](https://github.com/Shamiri-Institute/digitalhub/commit/89e10ff1e9d53f794bf782b0f327eeea2c6c341f))
+
 ## [1.41.3](https://github.com/Shamiri-Institute/digitalhub/compare/v1.41.2...v1.41.3) (2026-10-13)
 
 ### Bug Fixes
