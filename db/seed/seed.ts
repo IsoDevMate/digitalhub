@@ -28,7 +28,7 @@ import { TypeID } from "typeid-js";
 import { KENYAN_COUNTIES } from "#/lib/app-constants/constants";
 import { db, pool } from "#/db/client";
 import * as schema from "#/db/schema";
-import { hubSessionTypes } from "#/db/seed/hub-session-types";
+import { seedHubSessionTypes } from "#/db/seed/hub-session-types";
 import { createTickets } from "#/db/seed/tickets";
 import {
   buildRecordingsS3Key,
@@ -1409,7 +1409,7 @@ async function createSessionNames(hubs: Hub[]) {
 
   for (const hub of hubs) {
     // TODO: Modify to create sessionTypes per project per hub
-    for (const sessionType of hubSessionTypes) {
+    for (const sessionType of seedHubSessionTypes) {
       sessionNamesRecords.push({
         id: objectId("sessionname"),
         sessionType: sessionType.type,
