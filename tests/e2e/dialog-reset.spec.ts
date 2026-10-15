@@ -344,6 +344,18 @@ test("fellow drop-out for a group leader goes through the replace step and cance
   await confirm.getByRole("button", { name: "Confirm" }).click();
   const replace = page.getByRole("dialog").filter({ hasText: "Replace fellow" });
   await expect(replace.getByRole("button", { name: "Replace" }).first()).toBeVisible();
+  const leader = page.getByRole("dialog").filter({ hasText: "Select replacement fellow" });
+  const leaderSupervisor = leader.getByRole("combobox", { name: /^Select supervisor/ });
+  await replace.getByRole("button", { name: "Replace" }).first().click();
+  await leaderSupervisor.click();
+  await page.getByRole("option").first().click();
+  await expect(leaderSupervisor).not.toContainText("Select");
+  await page.keyboard.press("Escape");
+  await expect(leader).toBeHidden();
+  await replace.getByRole("button", { name: "Replace" }).first().click();
+  await expect(leaderSupervisor).toContainText("Select");
+  await page.keyboard.press("Escape");
+  await expect(leader).toBeHidden();
   await replace.getByRole("button", { name: "Cancel" }).click();
   await expect(replace).toBeHidden();
 
@@ -455,6 +467,7 @@ test("weekly session report shows each session's saved highlights, not typed tex
 
   await openFor(sessionA.sessionLabel);
   await expect(highlights).toHaveValue(sessionA.highlights);
+  await expect(dialog.getByRole("spinbutton", { name: "Student headcount" })).toBeVisible();
   await highlights.fill(typed);
   await closeDialog(page, dialog);
 
@@ -464,4 +477,564 @@ test("weekly session report shows each session's saved highlights, not typed tex
 
   await openFor(sessionB.sessionLabel);
   await expect(highlights).toHaveValue(sessionB.highlights);
+});
+
+async function expectCountyChangeClearsSubCounty(page: Page, dialog: Locator) {
+  const county = dialog.getByRole("combobox", { name: /^County/ });
+  const subCounty = dialog.getByRole("combobox", { name: /^Sub-county/ });
+  await county.click();
+  await page.getByRole("option", { name: "Nairobi", exact: true }).click();
+  await subCounty.click();
+  await page.getByRole("option", { name: "Dagoretti North", exact: true }).click();
+  await expect(subCounty).toContainText("Dagoretti North");
+  await county.click();
+  await page.getByRole("option", { name: "Mombasa", exact: true }).click();
+  await expect(subCounty).toContainText("Select sub-county");
+}
+
+async function pickCoordinatorAndProfile(table: "supervisors" | "fellows") {
+  const name = sql.raw(table === "supervisors" ? "p.supervisor_name" : "p.fellow_name");
+  const {
+    rows: [row],
+  } = await db.execute<{ email: string; name: string; subCounty: string }>(sql`
+    select u.email, ${name} as name, p.sub_county as "subCounty"
+    from hub_coordinators hc
+    join implementer_members m on m.identifier = hc.id and m.role = 'HUB_COORDINATOR'
+    join users u on u.id = m.user_id and u.email is not null
+    join ${sql.raw(table)} p on p.hub_id = hc.assigned_hub_id and ${name} is not null
+      and p.sub_county is not null and p.county is not null
+      and coalesce(p.dropped_out, false) = false
+      and (select count(*) from ${sql.raw(table)} o where o.hub_id = p.hub_id
+        and ${sql.raw(table === "supervisors" ? "o.supervisor_name" : "o.fellow_name")} = ${name}) = 1
+    where ${signableMember()}
+    order by u.email, p.id
+    limit 1`);
+  if (!row) throw new Error(`seed the database first: no ${table} with a sub-county`);
+  return row;
+}
+
+for (const [table, action, title] of [
+  ["supervisors", "Edit supervisor information", "Edit supervisor information"],
+  ["fellows", "Edit fellow information", "Edit fellow information"],
+] as const) {
+  test(`${title} shows the saved sub-county, discards typed text, and clears the sub-county with the county`, async ({
+    page,
+    context,
+  }) => {
+    const fixture = await pickCoordinatorAndProfile(table);
+    await signInWithEmail(context, fixture.email);
+    await page.goto(getUrl(`/hc/${table}`));
+    const dialog = page.getByRole("dialog", { name: title });
+    const fullName = dialog.getByRole("textbox", { name: /^Full name/ }).first();
+    async function open() {
+      await chooseRowAction(page, await searchRows(page, fixture.name), action);
+      await expect(dialog).toBeVisible();
+    }
+
+    await open();
+    await expect(dialog.getByRole("combobox", { name: /^Sub-county/ })).toContainText(
+      fixture.subCounty,
+    );
+    await expect(fullName).toHaveValue(fixture.name);
+    await fullName.fill(typed);
+    await closeDialog(page, dialog);
+
+    await open();
+    await expect(fullName).toHaveValue(fixture.name);
+    await expectCountyChangeClearsSubCounty(page, dialog);
+  });
+}
+
+test("add supervisor starts empty on each open and clears the sub-county with the county", async ({
+  page,
+  context,
+}) => {
+  const fixture = await pickCoordinatorAndProfile("supervisors");
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl("/hc/supervisors"));
+  const dialog = page.getByRole("dialog", { name: "Add new supervisor" });
+  const fullName = dialog.getByRole("textbox", { name: /^Full name/ }).first();
+  const subCounty = dialog.getByRole("combobox", { name: /^Sub-county/ });
+  async function open() {
+    await page.getByRole("button", { name: "Add supervisor" }).click();
+    await expect(dialog).toBeVisible();
+  }
+
+  await open();
+  await expectCountyChangeClearsSubCounty(page, dialog);
+  await subCounty.click();
+  await page.getByRole("option").first().click();
+  await fullName.fill(typed);
+  await closeDialog(page, dialog);
+
+  await open();
+  await expect(fullName).toHaveValue("");
+  await expect(subCounty).toContainText("Select sub-county");
+});
+
+test("my profile clears the sub-county when the county changes", async ({ page, context }) => {
+  const {
+    rows: [fixture],
+  } = await db.execute<{ email: string }>(sql`
+    select u.email from supervisors s
+    join implementer_members m on m.identifier = s.id and m.role = 'SUPERVISOR'
+    join users u on u.id = m.user_id and u.email is not null
+    where s.sub_county is not null and s.county is not null and ${signableMember()}
+    order by u.email
+    limit 1`);
+  if (!fixture) throw new Error("seed the database first: no supervisor with a sub-county");
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl("/sc/schedule"));
+  await page.getByAltText("Profile arrow drop down icon").click();
+  await page.getByRole("menuitem", { name: "My Profile" }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit profile" });
+  await expectCountyChangeClearsSubCounty(page, dialog);
+});
+
+test("schedule a session switches between school and venue with the session type", async ({
+  page,
+  context,
+}) => {
+  const fixture = await pickCoordinatorAndProfile("supervisors");
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl("/hc/schedule"));
+  await page.getByRole("button", { name: "Schedule a session" }).click();
+  const dialog = page.getByRole("dialog", { name: "Schedule a session" });
+  const sessionType = dialog.getByRole("combobox", { name: "Select a session type" });
+  const school = dialog.getByRole("combobox", { name: /^Select school/ });
+  const venue = dialog.getByRole("textbox", { name: "Enter venue" });
+
+  await sessionType.click();
+  await page.getByRole("option", { name: /Supervision 1$/ }).click();
+  await expect(venue).toBeVisible();
+  await expect(school).toHaveCount(0);
+  await venue.fill(typed);
+  await sessionType.click();
+  await page.getByRole("option", { name: /Clinical 1$/ }).click();
+  await expect(school).toBeVisible();
+  await expect(venue).toHaveCount(0);
+  await sessionType.click();
+  await page.getByRole("option", { name: /Supervision 1$/ }).click();
+  await expect(venue).toBeVisible();
+  await expect(venue).toHaveValue("");
+  await expect(school).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Pick a time" }).click();
+  await expect(page.getByRole("spinbutton", { name: "Hour" })).toBeVisible();
+  await expect(page.getByRole("spinbutton", { name: "Minutes" })).toBeVisible();
+});
+
+test("mark attendance clears the absence reason when the status changes", async ({
+  page,
+  context,
+}) => {
+  const {
+    rows: [fixture],
+  } = await db.execute<{ email: string; visibleId: string; supervisorName: string }>(sql`
+    select u.email, sc.visible_id as "visibleId", sv.supervisor_name as "supervisorName"
+    from hub_coordinators hc
+    join implementer_members m on m.identifier = hc.id and m.role = 'HUB_COORDINATOR'
+    join users u on u.id = m.user_id and u.email is not null
+    join schools sc on sc.hub_id = hc.assigned_hub_id and sc.archived_at is null
+    join supervisors sv on sv.id = sc.assigned_supervisor_id and sv.supervisor_name is not null
+    where ${signableMember()}
+      and exists (select 1 from intervention_sessions i where i.school_id = sc.id and i.occurred)
+    order by u.email, sc.visible_id
+    limit 1`);
+  if (!fixture) throw new Error("seed the database first: no school with an occurred session");
+
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl(`/hc/schools/${fixture.visibleId}/supervisors`));
+  const row = page.getByRole("row").filter({ hasText: fixture.supervisorName }).first();
+  await chooseRowAction(page, row, "Mark attendance");
+  const dialog = page.getByRole("dialog").filter({ hasText: "Select attendance" });
+  await dialog.getByRole("combobox", { name: /^Select session/ }).click();
+  await page.getByRole("option").first().click();
+  const reason = dialog.getByRole("combobox", { name: "Select reason for above" });
+  await dialog.getByRole("radio", { name: "Missed" }).click();
+  await reason.click();
+  await page.getByRole("option").first().click();
+  await expect(reason).not.toContainText("Select a reason");
+  await dialog.getByRole("radio", { name: "Attended" }).click();
+  await expect(reason).toHaveCount(0);
+  await dialog.getByRole("radio", { name: "Missed" }).click();
+  await expect(reason).toContainText("Select a reason");
+});
+
+async function pickCoordinatorSchools() {
+  const {
+    rows: [row],
+  } = await db.execute<{
+    email: string;
+    schoolNames: string[];
+    visibleIds: string[];
+    supervisorNames: (string | null)[];
+  }>(sql`
+    select u.email,
+      (array_agg(s.school_name order by s.visible_id))[1:2] as "schoolNames",
+      (array_agg(s.visible_id order by s.visible_id))[1:2] as "visibleIds",
+      (array_agg(sv.supervisor_name order by s.visible_id))[1:2] as "supervisorNames"
+    from hub_coordinators hc
+    join implementer_members m on m.identifier = hc.id and m.role = 'HUB_COORDINATOR'
+    join users u on u.id = m.user_id and u.email is not null
+    join schools s on s.hub_id = hc.assigned_hub_id and s.archived_at is null
+      and s.dropped_out_at is null
+      and (select count(*) from schools o where o.school_name = s.school_name) = 1
+    join supervisors sv on sv.id = s.assigned_supervisor_id and sv.supervisor_name is not null
+    where ${signableMember()}
+    group by u.email
+    having count(distinct sv.id) >= 2
+    order by u.email
+    limit 1`);
+  if (!row) throw new Error("seed the database first: no coordinator with two schools");
+  return row;
+}
+
+test("supervisor complaint starts empty on each open", async ({ page, context }) => {
+  const fixture = await pickCoordinatorAndProfile("supervisors");
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl("/hc/supervisors"));
+  const dialog = page.getByRole("dialog").filter({ hasText: "Submit complaint" });
+  const comments = dialog.getByLabel("Additional comments");
+  async function open() {
+    await chooseRowAction(page, await searchRows(page, fixture.name), "Submit complaint");
+    await expect(dialog).toBeVisible();
+  }
+
+  await open();
+  await dialog.getByRole("combobox").click();
+  await page.getByRole("option").first().click();
+  await comments.fill(typed);
+  await closeDialog(page, dialog);
+
+  await open();
+  await expect(comments).toHaveValue("");
+  await expect(dialog.getByRole("combobox")).toContainText("Select a complaint");
+});
+
+test("weekly hub report starts empty on each open", async ({ page, context }) => {
+  const fixture = await pickCoordinatorSchools();
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl("/hc/schools"));
+  const dialog = page.getByTestId("weekly-hub-report-dialog");
+  const recommendations = dialog.getByRole("textbox", { name: "Recommendations" });
+  await page.getByRole("button", { name: "Weekly Hub Report" }).click();
+  await recommendations.fill(typed);
+  await closeDialog(page, dialog);
+
+  await page.getByRole("button", { name: "Weekly Hub Report" }).click();
+  await expect(recommendations).toHaveValue("");
+});
+
+test("point supervisor shows each school's saved supervisor, not the last choice", async ({
+  page,
+  context,
+}) => {
+  const fixture = await pickCoordinatorSchools();
+  const [nameA = "", nameB = ""] = fixture.schoolNames;
+  const [supervisorA = "", supervisorB = ""] = fixture.supervisorNames.map((n) => n ?? "");
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl("/hc/schools"));
+  const dialog = page.getByRole("dialog", { name: "Change point supervisor" });
+  const supervisor = dialog.getByRole("combobox");
+  async function openFor(name: string) {
+    await chooseRowAction(
+      page,
+      await rowWithCell(page, page.getByRole("main"), name),
+      "Change point supervisor",
+    );
+    await expect(dialog).toBeVisible();
+  }
+
+  await openFor(nameA);
+  await expect(supervisor).toContainText(supervisorA);
+  await supervisor.click();
+  await page.getByRole("option", { name: supervisorB, exact: true }).click();
+  await closeDialog(page, dialog);
+
+  await openFor(nameA);
+  await expect(supervisor).toContainText(supervisorA);
+  await closeDialog(page, dialog);
+
+  await openFor(nameB);
+  await expect(supervisor).toContainText(supervisorB);
+});
+
+test("new group starts with no supervisor chosen on each open", async ({ page, context }) => {
+  const fixture = await pickCoordinatorSchools();
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl(`/hc/schools/${fixture.visibleIds[0]}/groups`));
+  const dialog = page.getByRole("dialog").filter({ hasText: /Select supervisor/ });
+  const supervisor = dialog.getByRole("combobox", { name: /^Select supervisor/ });
+  await page.getByRole("button", { name: "New group" }).click();
+  await supervisor.click();
+  await page.getByRole("option").first().click();
+  await expect(supervisor).not.toContainText("Select");
+  await closeDialog(page, dialog);
+
+  await page.getByRole("button", { name: "New group" }).click();
+  await expect(supervisor).toContainText("Select");
+});
+
+async function pickCoordinatorStudents() {
+  const {
+    rows: [row],
+  } = await db.execute<{
+    email: string;
+    visibleId: string;
+    admissionNumbers: string[];
+    studentNames: string[];
+  }>(sql`
+    select u.email, sc.visible_id as "visibleId",
+      (array_agg(st.admission_number order by st.id))[1:2] as "admissionNumbers",
+      (array_agg(st.student_name order by st.id))[1:2] as "studentNames"
+    from hub_coordinators hc
+    join implementer_members m on m.identifier = hc.id and m.role = 'HUB_COORDINATOR'
+    join users u on u.id = m.user_id and u.email is not null
+    join schools sc on sc.hub_id = hc.assigned_hub_id and sc.archived_at is null
+    join students st on st.school_id = sc.id and st.archived_at is null
+      and st.student_name is not null and st.admission_number is not null
+      and (select count(*) from students o
+        where o.school_id = st.school_id and o.student_name = st.student_name) = 1
+    where ${signableMember()}
+    group by u.email, sc.visible_id
+    having count(*) >= 2
+    order by u.email, sc.visible_id
+    limit 1`);
+  if (!row) throw new Error("seed the database first: no school with two students");
+  return row;
+}
+
+test("student details, reporting note and school move start from each student's values", async ({
+  page,
+  context,
+}) => {
+  const fixture = await pickCoordinatorStudents();
+  const [nameA = "", nameB = ""] = fixture.studentNames;
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl(`/hc/schools/${fixture.visibleId}/students`));
+  const main = page.getByRole("main");
+  async function openFor(studentName: string, action: string, dialog: Locator) {
+    await chooseRowAction(page, await searchRows(page, studentName, main), action);
+    await expect(dialog).toBeVisible();
+  }
+
+  const details = page.getByRole("dialog", { name: "Edit student information" });
+  const studentName = details.getByLabel("Student name");
+  await openFor(nameA, "Edit information", details);
+  await expect(studentName).toHaveValue(nameA);
+  await studentName.fill(typed);
+  await closeDialog(page, details);
+  await openFor(nameA, "Edit information", details);
+  await expect(studentName).toHaveValue(nameA);
+  await closeDialog(page, details);
+  await openFor(nameB, "Edit information", details);
+  await expect(studentName).toHaveValue(nameB);
+  await closeDialog(page, details);
+
+  const note = page.getByRole("dialog").filter({ hasText: "Add reporting note" });
+  const incident = note.getByRole("textbox").first();
+  await openFor(nameA, "Reporting notes", note);
+  await incident.fill(typed);
+  await closeDialog(page, note);
+  await openFor(nameA, "Reporting notes", note);
+  await expect(incident).toHaveValue("");
+  await closeDialog(page, note);
+
+  const move = page.getByRole("dialog", { name: "Move student to another school" });
+  const destination = move.getByRole("combobox", { name: /^Destination school/ });
+  await openFor(nameA, "Move to another school", move);
+  await destination.click();
+  await page.getByRole("option").first().click();
+  await expect(destination).not.toContainText("Select a school");
+  await closeDialog(page, move);
+  await openFor(nameB, "Move to another school", move);
+  await expect(destination).toContainText("Select a school");
+});
+
+async function expectDropoutDiscardedOnCancel(
+  page: Page,
+  open: () => Promise<void>,
+  title: string,
+  validationError: string,
+  cancelReturnsToForm = false,
+) {
+  const form = page.getByRole("dialog").filter({ hasText: title });
+  const reason = form.getByRole("combobox", { name: /^Select reason/ });
+  await open();
+  await reason.click();
+  await page.getByRole("option").first().click();
+  await form.getByRole("button", { name: "Submit" }).click();
+  const confirm = page.getByRole("dialog").filter({ hasText: "Confirm drop out" });
+  await expect(confirm.getByText("Are you sure?")).toBeVisible();
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirm).toBeHidden();
+
+  if (cancelReturnsToForm) await expect(form).toBeVisible();
+  else await open();
+  await expect(reason).toContainText("Select a dropout reason");
+  await form.getByRole("button", { name: "Submit" }).click();
+  await expect(form.getByText(validationError)).toBeVisible();
+  await closeDialog(page, form);
+}
+
+test("supervisor drop-out discards the reason after cancelling the confirm", async ({
+  page,
+  context,
+}) => {
+  const fixture = await pickCoordinatorAndProfile("supervisors");
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl("/hc/supervisors"));
+  await expectDropoutDiscardedOnCancel(
+    page,
+    async () => chooseRowAction(page, await searchRows(page, fixture.name), "Drop out supervisor"),
+    "Drop out supervisor",
+    "Please select one of the supplied supervisor dropout reason options",
+  );
+});
+
+test("school drop-out discards the reason after cancelling the confirm", async ({
+  page,
+  context,
+}) => {
+  const fixture = await pickCoordinatorSchools();
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl("/hc/schools"));
+  await expectDropoutDiscardedOnCancel(
+    page,
+    async () => {
+      const row = await rowWithCell(page, page.getByRole("main"), fixture.schoolNames[0] ?? "");
+      await row.getByRole("cell").last().click();
+      await page.getByRole("menuitem", { name: "Dropout school" }).click();
+    },
+    "Drop out school",
+    "Please select one of the supplied school dropout reason options",
+    true,
+  );
+});
+
+test("student drop-out discards the reason after cancelling the confirm", async ({
+  page,
+  context,
+}) => {
+  const fixture = await pickCoordinatorStudents();
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl(`/hc/schools/${fixture.visibleId}/students`));
+  await expectDropoutDiscardedOnCancel(
+    page,
+    async () =>
+      chooseRowAction(
+        page,
+        await searchRows(page, fixture.studentNames[0] ?? "", page.getByRole("main")),
+        "Drop-out student",
+      ),
+    "Drop out student",
+    "Please select reason for drop out.",
+  );
+});
+
+test("session occurrence goes back to the saved state after cancelling the confirm", async ({
+  page,
+  context,
+}) => {
+  const {
+    rows: [fixture],
+  } = await db.execute<{ email: string; visibleId: string; sessionName: string }>(sql`
+    select u.email, s.visible_id as "visibleId", n.session_name as "sessionName"
+    from hub_coordinators hc
+    join implementer_members m on m.identifier = hc.id and m.role = 'HUB_COORDINATOR'
+    join users u on u.id = m.user_id and u.email is not null
+    join schools s on s.hub_id = hc.assigned_hub_id and s.archived_at is null
+    join intervention_sessions i on i.school_id = s.id and not i.occurred
+      and coalesce(i.status::text, '') <> 'Cancelled'
+    join session_names n on n.id = i.session_id and n.session_type = 'INTERVENTION'
+    where ${signableMember()}
+      and (select count(*) from intervention_sessions o
+        where o.school_id = s.id and o.session_id = i.session_id) = 1
+      and not exists (select 1 from intervention_sessions p
+        join session_names pn on pn.id = p.session_id and pn.session_type = n.session_type
+        where p.school_id = s.id and not p.occurred and p.session_date < i.session_date
+          and coalesce(p.status::text, '') <> 'Cancelled')
+    order by u.email, s.visible_id, i.session_date
+    limit 1`);
+  if (!fixture) throw new Error("seed the database first: no markable session");
+
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl(`/hc/schools/${fixture.visibleId}/sessions`));
+  const main = page.getByRole("main");
+  const label = sessionDisplayName(fixture.sessionName) ?? fixture.sessionName;
+  const mark = page
+    .getByRole("dialog", { name: "Mark session occurrence" })
+    .filter({ hasNotText: "Are you sure?" });
+  async function open() {
+    await chooseRowAction(
+      page,
+      main.getByRole("row").filter({ has: page.getByRole("cell", { name: label, exact: true }) }),
+      "Mark session occurrence",
+    );
+    await expect(mark).toBeVisible();
+  }
+
+  await open();
+  await expect(mark.getByRole("radio", { name: "Unmarked" })).toBeChecked();
+  await mark.getByRole("radio", { name: "Attended" }).click();
+  await mark.getByRole("button", { name: "Submit" }).click();
+  const confirm = page.getByRole("dialog").filter({ hasText: "Are you sure?" });
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirm).toBeHidden();
+
+  await open();
+  await expect(mark.getByRole("radio", { name: "Unmarked" })).toBeChecked();
+});
+
+test("mark attendance shows each session's saved status on reopen and after switching sessions", async ({
+  page,
+  context,
+}) => {
+  const {
+    rows: [fixture],
+  } = await db.execute<{ email: string; visibleId: string; supervisorName: string }>(sql`
+    select u.email, sc.visible_id as "visibleId", sv.supervisor_name as "supervisorName"
+    from hub_coordinators hc
+    join implementer_members m on m.identifier = hc.id and m.role = 'HUB_COORDINATOR'
+    join users u on u.id = m.user_id and u.email is not null
+    join schools sc on sc.hub_id = hc.assigned_hub_id and sc.archived_at is null
+    join supervisors sv on sv.id = sc.assigned_supervisor_id and sv.supervisor_name is not null
+    where ${signableMember()}
+      and (select count(*) from intervention_sessions i where i.school_id = sc.id and i.occurred) >= 2
+    order by u.email, sc.visible_id
+    limit 1`);
+  if (!fixture) throw new Error("seed the database first: no school with two occurred sessions");
+
+  await signInWithEmail(context, fixture.email);
+  await page.goto(getUrl(`/hc/schools/${fixture.visibleId}/supervisors`));
+  const row = page.getByRole("row").filter({ hasText: fixture.supervisorName }).first();
+  const dialog = page.getByRole("dialog").filter({ hasText: "Select attendance" });
+  const session = dialog.getByRole("combobox", { name: /^Select session/ });
+  async function checkedStatus() {
+    for (const name of ["Attended", "Missed", "Unmarked"]) {
+      if (await dialog.getByRole("radio", { name }).isChecked()) return name;
+    }
+    return null;
+  }
+  async function open() {
+    await chooseRowAction(page, row, "Mark attendance");
+    await expect(dialog).toBeVisible();
+  }
+
+  await open();
+  const savedSession = (await session.textContent()) ?? "";
+  const saved = await checkedStatus();
+  const other = saved === "Missed" ? "Attended" : "Missed";
+  await dialog.getByRole("radio", { name: other }).click();
+  await closeDialog(page, dialog);
+
+  await open();
+  await expect(session).toHaveText(savedSession);
+  expect(await checkedStatus()).toBe(saved);
+  await dialog.getByRole("radio", { name: other }).click();
+  await session.click();
+  await page.getByRole("option").first().click();
+  await session.click();
+  await page.getByRole("option").last().click();
+  expect(await checkedStatus()).toBe(saved);
 });
