@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [2.2.1](https://github.com/Shamiri-Institute/digitalhub/compare/v2.2.0...v2.2.1) (2026-10-16)
+
+### Bug Fixes
+
+- **ui:** name untitled dialogs, label the session note, drop ts-expect-error and make two columns searchable ([#969](https://github.com/Shamiri-Institute/digitalhub/issues/969)) ([f343daf](https://github.com/Shamiri-Institute/digitalhub/commit/f343dafd764537e7eece78ad030d2b08cc24fbf1))
+
 ## [2.2.0](https://github.com/Shamiri-Institute/digitalhub/compare/v2.1.2...v2.2.0) (2026-10-16)
 
 ### Features
