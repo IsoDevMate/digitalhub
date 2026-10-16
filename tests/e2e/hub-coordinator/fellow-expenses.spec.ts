@@ -2,8 +2,8 @@ import { expect, test } from "@playwright/test";
 import { sql } from "drizzle-orm";
 
 import { db } from "#/db/client";
-import { emailForProfile, signInWithEmail } from "#/tests/helpers";
-import { cellUnder, getUrl, searchRows } from "#/tests/pages/helpers";
+import { emailForProfile, signInWithEmail, required } from "#/tests/helpers";
+import { cellUnder, expandRow, getUrl, searchRows } from "#/tests/pages/helpers";
 
 type Expected = {
   fellowName: string;
@@ -78,7 +78,7 @@ test.beforeAll(async () => {
       break;
     }
   }
-  if (!expected) throw new Error("seed the database first: no hub fellow with payouts");
+  required(expected, "no hub fellow with payouts");
 });
 
 test("a fellow's row shows the session counts and payout totals in the database", async ({
@@ -101,8 +101,7 @@ test("a fellow's row shows the session counts and payout totals in the database"
   await expect(await cell("Paid Amount (KES)")).toHaveText(String(expected.paid));
   await expect(await cell("Total Amount (KES)")).toHaveText(String(expected.total));
 
-  await row.getByRole("cell").first().getByRole("button").click();
-  const payoutTable = page.locator("td:has(table)");
+  const payoutTable = await expandRow(page, row);
   await expect(
     payoutTable.getByText(`1 of ${Math.ceil(expected.payouts / 10)}`, { exact: true }),
   ).toBeVisible();
