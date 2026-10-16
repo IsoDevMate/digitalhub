@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [2.2.0](https://github.com/Shamiri-Institute/digitalhub/compare/v2.1.2...v2.2.0) (2026-10-16)
+
+### Features
+
+- **survey:** add surveys with versioned form documents for the Research team ([#954](https://github.com/Shamiri-Institute/digitalhub/issues/954)) ([9624cc8](https://github.com/Shamiri-Institute/digitalhub/commit/9624cc88ebfdda79d98d30cca27b2877c86ee171))
+
 ## [2.1.2](https://github.com/Shamiri-Institute/digitalhub/compare/v2.1.1...v2.1.2) (2026-10-15)
 
 ### Bug Fixes
