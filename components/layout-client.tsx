@@ -11,7 +11,7 @@ import {
   SchoolIcon,
   SignOutIcon,
 } from "#/components/icons";
-import { Building2, Menu, ShieldAlert, Users } from "lucide-react";
+import { Building2, ClipboardList, Menu, ShieldAlert, Users } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -54,7 +54,9 @@ interface NavigationLinkProps {
   hubsActive: boolean;
   ticketsActive: boolean;
   usersActive: boolean;
+  surveysActive: boolean;
   isSuperAdmin: boolean;
+  canManageSurveys: boolean;
 }
 
 export function LayoutClient({
@@ -63,6 +65,7 @@ export function LayoutClient({
   profile,
   isAdminUser,
   isSuperAdmin,
+  canManageSurveys,
   adminProjects,
   personnel,
 }: {
@@ -71,6 +74,7 @@ export function LayoutClient({
   profile: CurrentPersonnel | null;
   isAdminUser: boolean;
   isSuperAdmin: boolean;
+  canManageSurveys: boolean;
   adminProjects: AdminProject[] | null;
   personnel: ImplementerPersonnel | null;
 }) {
@@ -87,6 +91,7 @@ export function LayoutClient({
   const hubsActive = subRoute?.includes("hubs") || subRoute?.includes("schools");
   const ticketsActive = subRoute?.includes("tickets");
   const usersActive = subRoute?.includes("users");
+  const surveysActive = subRoute?.includes("survey");
 
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
@@ -233,7 +238,9 @@ export function LayoutClient({
                 hubsActive: hubsActive ?? false,
                 ticketsActive: ticketsActive ?? false,
                 usersActive: usersActive ?? false,
+                surveysActive: surveysActive ?? false,
                 isSuperAdmin,
+                canManageSurveys,
               })}
           </div>
         </div>
@@ -313,7 +320,9 @@ function getCurrentUserNavigationLinks(
     hubsActive,
     ticketsActive,
     usersActive,
+    surveysActive,
     isSuperAdmin,
+    canManageSurveys,
   }: NavigationLinkProps,
 ) {
   const links = [];
@@ -357,6 +366,15 @@ function getCurrentUserNavigationLinks(
         >
           <Users className="h-4 w-4" strokeWidth={3} />
           <Link href={`/${mainRoute}/users`}>Users</Link>
+        </div>,
+      );
+    }
+    // Also cosmetic: the survey pages and actions check survey access themselves.
+    if (canManageSurveys) {
+      links.push(
+        <div className={`tab-link ${cn(surveysActive && "active")}`} key="admin-surveys">
+          <ClipboardList className="h-5 w-5" />
+          <Link href={`/${mainRoute}/surveys`}>Surveys</Link>
         </div>,
       );
     }

@@ -1,5 +1,5 @@
 import { faker } from "@faker-js/faker";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { InferInsertModel, InferSelectModel } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import {
@@ -12,6 +12,8 @@ import {
   referralStatusOptions,
   riskStatusOptions,
   sessionTypes,
+  SurveyStatus,
+  SurveyVersionStatus,
   TriageActionTaken,
 } from "#/db/enums";
 import {
@@ -39,9 +41,11 @@ import {
   careAdminEmail,
   emiratesAcademy,
   plainAdminEmail,
+  researchAdminEmail,
   sobhaAcademy,
   superAdminEmail,
 } from "#/db/seed/fixtures";
+import type { SurveyForm } from "#/lib/survey/form";
 import { seedHubSessionTypes } from "#/db/seed/hub-session-types";
 import { createTickets } from "#/db/seed/tickets";
 import {
@@ -390,6 +394,14 @@ async function createAdminUsers(
       implementerIds: [shamiri.id],
       isSuperAdmin: false,
       team: AdminTeam.CARE,
+    },
+    {
+      userId: objectId("user"),
+      email: researchAdminEmail,
+      adminName: "Research Admin",
+      implementerIds: [shamiri.id],
+      isSuperAdmin: false,
+      team: AdminTeam.RESEARCH,
     },
     {
       userId: objectId("user"),
@@ -761,6 +773,145 @@ async function createClinicalTeam(arsenal: Hub) {
     identifier: clinicalTeamId,
   });
   return created;
+}
+
+const TWO_WEEKS_SCALE = [
+  { code: "0", label: "Not at all" },
+  { code: "1", label: "Several days" },
+  { code: "2", label: "More than half the days" },
+  { code: "3", label: "Nearly every day" },
+];
+
+/** The seeded baseline: consent, a few questions, and a short grid, over two pages. */
+const BASELINE_FORM: SurveyForm = {
+  format: 1,
+  pages: [
+    {
+      title: "About you",
+      items: [
+        { id: "consent-heading", kind: "heading", text: "Informed consent" },
+        {
+          id: "consent-text",
+          kind: "paragraph",
+          text: "Your answers are private and will only be used to improve the programme.",
+        },
+        { id: "consent", kind: "signature", key: "consent", prompt: "Signature", required: true },
+        { id: "about-heading", kind: "heading", text: "About you" },
+        {
+          id: "age",
+          kind: "number",
+          key: "age",
+          prompt: "How old are you?",
+          required: true,
+          digits: 2,
+          min: 10,
+          max: 25,
+        },
+        {
+          id: "gender",
+          kind: "single_choice",
+          key: "gender",
+          prompt: "What is your gender?",
+          required: true,
+          options: [
+            { code: "F", label: "Female" },
+            { code: "M", label: "Male" },
+            { code: "X", label: "Prefer not to say" },
+          ],
+        },
+        {
+          id: "dob",
+          kind: "date",
+          key: "date_of_birth",
+          prompt: "When were you born?",
+          required: false,
+        },
+      ],
+    },
+    {
+      title: "How you feel",
+      items: [
+        {
+          id: "phq-intro",
+          kind: "paragraph",
+          text: "Over the last two weeks, how often have you been bothered by the following?",
+        },
+        {
+          id: "phq",
+          kind: "grid",
+          key: "phq",
+          prompt: "Over the last two weeks",
+          required: true,
+          options: TWO_WEEKS_SCALE,
+          rows: [
+            { key: "1", label: "Little interest or pleasure in doing things" },
+            { key: "2", label: "Feeling sad, depressed or hopeless" },
+          ],
+        },
+        {
+          id: "wellbeing",
+          kind: "single_choice",
+          key: "wellbeing",
+          prompt: "How happy do you feel at school?",
+          required: true,
+          options: ["1", "2", "3", "4", "5"].map((code) => ({ code, label: code })),
+        },
+        {
+          id: "comments",
+          kind: "text",
+          key: "comments",
+          prompt: "Is there anything else you would like to tell us?",
+          required: false,
+          lines: 4,
+        },
+      ],
+    },
+  ],
+};
+
+/** A published baseline survey made by the Research team admin, with pages that mix question types. */
+async function createResearchSurveys(projectId: string) {
+  console.log("creating research surveys");
+  const researchAdmin = await db.query.adminUser.findFirst({
+    where: (a, { eq }) => eq(a.email, researchAdminEmail),
+    columns: { implementerId: true },
+  });
+  const researchAdminUser = await db.query.user.findFirst({
+    where: (u, { eq }) => eq(u.email, researchAdminEmail),
+    columns: { id: true },
+  });
+  if (!researchAdmin || !researchAdminUser)
+    throw new Error("No Research team admin to own the survey");
+  const createdBy = researchAdminUser.id;
+
+  const [survey] = await db
+    .insert(schema.survey)
+    .values({
+      implementerId: researchAdmin.implementerId,
+      projectId,
+      code: "BASE26",
+      title: "Baseline wellbeing survey",
+      description: "Given to every student before the intervention starts.",
+      createdBy,
+    })
+    .returning();
+  if (!survey) throw new Error("Research survey was not created");
+
+  // Written as a draft, then published: a version is created as a draft and frozen once published.
+  const [version] = await db
+    .insert(schema.surveyVersion)
+    .values({ surveyId: survey.id, versionNumber: 1, createdBy, form: BASELINE_FORM })
+    .returning();
+  if (!version) throw new Error("Research survey version was not created");
+
+  await db
+    .update(schema.surveyVersion)
+    .set({ status: SurveyVersionStatus.PUBLISHED })
+    .where(eq(schema.surveyVersion.id, version.id));
+  await db
+    .update(schema.survey)
+    .set({ status: SurveyStatus.ACTIVE })
+    .where(eq(schema.survey.id, survey.id));
 }
 
 async function createFellows(arsenal: Hub, supervisors: Supervisor[], emails: Set<string>) {
@@ -2096,6 +2247,7 @@ async function main() {
   const supervisors = await createSupervisors(arsenal, otherHubs, userEmailSet, 6);
   const clinicalLeads = await createClinicalLeads(arsenal, otherHubs, userEmailSet);
   const clinicalTeam = await createClinicalTeam(arsenal);
+  await createResearchSurveys(defaultProjectId);
   const operations = await createOperations(arsenal, otherHubs, userEmailSet);
   const fellows = await createFellows(arsenal, supervisors, userEmailSet);
 

@@ -5,6 +5,7 @@ export const arsenalHub = { visibleId: "ARSENAL1", hubName: "Arsenal Hub" };
 export const superAdminEmail = "admin@shamiri.institute";
 export const careAdminEmail = "care.admin@shamiri.institute";
 export const plainAdminEmail = "plain.admin@shamiri.institute";
+export const researchAdminEmail = "research.admin@shamiri.institute";
 
 const arsenalStaffDetails = {
   county: "Nairobi",

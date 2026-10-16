@@ -14,6 +14,8 @@ import {
   clinicalScreeningInfo,
   clinicalSessionAttendance,
   clinicalTeam,
+  survey,
+  surveyVersion,
   fellow,
   fellowAttendance,
   fellowComplaints,
@@ -251,6 +253,33 @@ export const clinicalTeamRelations = relations(clinicalTeam, ({ one }) => ({
     fields: [clinicalTeam.implementerId],
     references: [implementer.id],
     relationName: "ClinicalTeam_implementer",
+  }),
+}));
+
+export const surveyRelations = relations(survey, ({ one, many }) => ({
+  implementer: one(implementer, {
+    fields: [survey.implementerId],
+    references: [implementer.id],
+    relationName: "Survey_implementer",
+  }),
+  project: one(project, {
+    fields: [survey.projectId],
+    references: [project.id],
+    relationName: "Survey_project",
+  }),
+  versions: many(surveyVersion, { relationName: "SurveyVersion_survey" }),
+}));
+
+export const surveyVersionRelations = relations(surveyVersion, ({ one }) => ({
+  survey: one(survey, {
+    fields: [surveyVersion.surveyId],
+    references: [survey.id],
+    relationName: "SurveyVersion_survey",
+  }),
+  basedOnVersion: one(surveyVersion, {
+    fields: [surveyVersion.basedOnVersionId],
+    references: [surveyVersion.id],
+    relationName: "SurveyVersion_basedOnVersion",
   }),
 }));
 

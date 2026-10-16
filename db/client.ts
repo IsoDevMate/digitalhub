@@ -44,8 +44,9 @@ function pgError(error: unknown): DatabaseError | undefined {
   return undefined;
 }
 
-export function isUniqueViolation(error: unknown) {
-  return pgError(error)?.code === "23505";
+export function isUniqueViolation(error: unknown, constraint?: string) {
+  const pg = pgError(error);
+  return pg?.code === "23505" && (constraint === undefined || pg.constraint === constraint);
 }
 
 /** `foreign_key_violation`, or `restrict_violation` from an `ON DELETE RESTRICT` key. */
