@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [2.2.4](https://github.com/Shamiri-Institute/digitalhub/compare/v2.2.3...v2.2.4) (2026-10-19)
+
+### Bug Fixes
+
+- **db:** enforce intervention_sessions.hub_id with composite FKs to school and session type ([#976](https://github.com/Shamiri-Institute/digitalhub/issues/976)) ([e776835](https://github.com/Shamiri-Institute/digitalhub/commit/e776835882f2362c20997784ecab072bd502b613))
+
 ## [2.2.3](https://github.com/Shamiri-Institute/digitalhub/compare/v2.2.2...v2.2.3) (2026-10-19)
 
 ### Bug Fixes
