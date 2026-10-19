@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file. See [commit-and-tag-version](https://github.com/absolute-version/commit-and-tag-version) for commit guidelines.
 
+## [2.2.3](https://github.com/Shamiri-Institute/digitalhub/compare/v2.2.2...v2.2.3) (2026-10-19)
+
+### Bug Fixes
+
+- **db:** normalize schools.boarding_day and constrain it ([#974](https://github.com/Shamiri-Institute/digitalhub/issues/974)) ([0771dff](https://github.com/Shamiri-Institute/digitalhub/commit/0771dff51419b97ca08e09a3651d8cdb6957b620))
+
 ## [2.2.2](https://github.com/Shamiri-Institute/digitalhub/compare/v2.2.1...v2.2.2) (2026-10-19)
 
 ## [2.2.1](https://github.com/Shamiri-Institute/digitalhub/compare/v2.2.0...v2.2.1) (2026-10-16)
